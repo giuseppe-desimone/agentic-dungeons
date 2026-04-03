@@ -1,0 +1,10 @@
+pillow
+worldengine==0.20.0
+h5py
+opencv-python
+
+#for img gen
+diffusers
+torch
+transformers
+accelerate
