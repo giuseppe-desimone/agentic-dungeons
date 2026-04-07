@@ -146,6 +146,9 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.claude/
+CLAUDE.md
+tasks/
 
 # Spyder project settings
 .spyderproject
