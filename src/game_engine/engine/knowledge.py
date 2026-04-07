@@ -1,7 +1,10 @@
-"""PlayerKnowledgeBase: la vista soggettiva del player sul mondo.
+"""PlayerKnowledgeBase e VisibilityEngine: la vista soggettiva del player sul mondo.
 
 Principio fondamentale: il player vive in un mondo parzialmente opaco.
-Questa classe è l'UNICA fonte di dati per l'Agente Narrativo — mai il world state globale.
+PlayerKnowledgeBase è l'UNICA fonte di dati per l'Agente Narrativo — mai il world state globale.
+
+VisibilityEngine è il guardiano: determina se e come un evento entra nella
+PlayerKnowledgeBase, in base alla posizione del player e alla visibilità dell'evento.
 
 Separazione garantita:
     WORLD STATE (globale, omnisciente)
@@ -16,12 +19,16 @@ Separazione garantita:
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from pydantic import BaseModel, Field
 
 from ..models.base import WorldTime
+from ..models.entity import PlayerEntity
 from ..models.event import GameEvent
+
+if TYPE_CHECKING:
+    from .world_state import WorldState
 
 
 class KnowledgeUpdate(BaseModel):
@@ -160,3 +167,111 @@ class PlayerKnowledgeBase(BaseModel):
                 last_known_status=existing.last_known_status,
                 last_known_relations=existing.last_known_relations,
             )
+
+
+class VisibilityEngine:
+    """Determina se e come un evento entra nella PlayerKnowledgeBase.
+
+    Opera sul world state globale, produce KnowledgeUpdate da passare a
+    PlayerKnowledgeBase.apply_update(). È il guardiano della separazione
+    world state / player knowledge.
+
+    Regole (in ordine di priorità):
+        1. Player fisicamente nella stessa location dell'evento → direct_witness (1.0)
+        2. Player esplicitamente in event.visibility.known_to → informed (0.9)
+        3. Evento è un rumor in scope local/regional raggiungibile → rumor (0.4)
+        4. Nessuna regola → None (il player non sa nulla)
+    """
+
+    def evaluate(
+        self,
+        event: GameEvent,
+        player: PlayerEntity,
+        world_state: "WorldState",
+    ) -> Optional[KnowledgeUpdate]:
+        """Valuta se e come il player apprende un evento.
+
+        Args:
+            event: L'evento da valutare dal world state globale.
+            player: Il PlayerEntity corrente.
+            world_state: Il world state globale (non esposto al player).
+
+        Returns:
+            KnowledgeUpdate se il player apprende l'evento, None altrimenti.
+        """
+        # Regola 1: testimonianza diretta — stessa location fisica
+        if self._player_in_event_location(event, player):
+            return KnowledgeUpdate(
+                event_id=event.id,
+                how_learned="direct_witness",
+                certainty=1.0,
+            )
+
+        # Regola 2: il player è esplicitamente informato
+        if player.id in event.visibility.known_to:
+            return KnowledgeUpdate(
+                event_id=event.id,
+                how_learned="informed",
+                certainty=0.9,
+            )
+
+        # Regola 3: rumor che si diffonde nella regione del player
+        if event.verb == "rumored" and self._player_in_scope(event, player, world_state):
+            return KnowledgeUpdate(
+                event_id=event.id,
+                how_learned="rumor",
+                certainty=0.4,
+            )
+
+        return None
+
+    def _player_in_event_location(
+        self,
+        event: GameEvent,
+        player: PlayerEntity,
+    ) -> bool:
+        """Verifica se il player è fisicamente nella stessa location dell'evento.
+
+        Usa player.mechanical["location_id"] e event.payload["location_id"].
+        Se uno dei due manca → False.
+
+        Args:
+            event: L'evento da valutare.
+            player: Il PlayerEntity corrente.
+
+        Returns:
+            True se player e evento condividono la stessa location_id.
+        """
+        player_loc = player.mechanical.get("location_id")
+        event_loc = event.payload.get("location_id")
+        if player_loc is None or event_loc is None:
+            return False
+        return player_loc == event_loc
+
+    def _player_in_scope(
+        self,
+        event: GameEvent,
+        player: PlayerEntity,
+        world_state: "WorldState",
+    ) -> bool:
+        """Verifica se il player è nel raggio di diffusione di un rumor.
+
+        Fase 2: semplificazione deliberata.
+        - scope "local" → il player deve essere nella stessa location
+        - scope "regional" → il rumor raggiunge sempre il player (modello semplificato)
+        Il dettaglio geografico completo sarà aggiunto in Fase 5 con il SliceBuilder.
+
+        Args:
+            event: L'evento rumor da valutare.
+            player: Il PlayerEntity corrente.
+            world_state: Il world state globale.
+
+        Returns:
+            True se il rumor può raggiungere il player.
+        """
+        scope = event.visibility.scope
+        if scope == "regional":
+            return True
+        if scope == "local":
+            return self._player_in_event_location(event, player)
+        return False
