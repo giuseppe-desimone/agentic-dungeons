@@ -1,15 +1,17 @@
-"""demo.py — Dimostrazione del game engine in stato attuale (Fasi 1-3).
+"""demo.py — Agentic Dungeons: flusso completo del Game Engine.
 
-Simula un piccolo scenario narrativo:
-  - Una fazione dichiara guerra a un'altra
-  - Il ConsequenceEngine genera conseguenze (assedi, ritorsioni, ecc.)
-  - Il player assiste in prima persona ad alcuni eventi
-  - La PlayerKnowledgeBase aggiorna solo ciò che il player può sapere
+Copre tutte le fasi implementate:
+  Fase 1  — Modelli base (WorldTime, GameTick, entità, eventi)
+  Fase 2  — VisibilityEngine, EventLogger SQLite, CooldownTracker
+  Fase 3  — ConsequenceEngine, ScheduledEventProcessor
+  Fase 5  — NarrativeSlice, QuestSlice, MoodCalculator
+  Fase 6  — PlayerAction, ActionFilterEngine, IntentScheduler
+  Fase 8  — SnapshotManager msgpack, SaveManager
+  Fase 9  — Bridge: spawn_entity, resolve_combat, apply_movement,
+              apply_inventory, apply_xp
 
-Esegui con:
-    uv run python demo.py
-    oppure
-    python demo.py  (se src/ è nel PYTHONPATH)
+Eseguire da root del progetto:
+    python demo.py
 """
 
 from __future__ import annotations
@@ -17,23 +19,32 @@ from __future__ import annotations
 import asyncio
 import random
 import sys
+import tempfile
 from pathlib import Path
 
-# Aggiungi src/ al path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
+# Forza UTF-8 su stdout Windows (cp1252 non supporta i caratteri box)
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
+# ── Game Engine imports ───────────────────────────────────────────────────────
+from game_engine.bridge.game_engine import (
+    apply_inventory,
+    apply_movement,
+    apply_xp,
+    resolve_combat,
+    spawn_entity,
+)
+from game_engine.engine.action import ActionFilterEngine, IntentScheduler
 from game_engine.engine.consequence import ConsequenceEngine, ScheduledEventProcessor
 from game_engine.engine.cooldown import CooldownTracker
 from game_engine.engine.knowledge import PlayerKnowledgeBase, VisibilityEngine
+from game_engine.engine.slice_builder import NarrativeSliceBuilder, QuestSliceBuilder
 from game_engine.engine.world_clock import WorldClock
 from game_engine.engine.world_state import WorldState
-from game_engine.models.base import (
-    DayMoment,
-    EntityKind,
-    EntityStatus,
-    GameTick,
-    WorldTime,
-)
+from game_engine.models.base import DayMoment, EntityKind, EntityStatus, GameTick, WorldTime
 from game_engine.models.entity import (
     EntityIdentity,
     EntityMeta,
@@ -41,384 +52,429 @@ from game_engine.models.entity import (
     NPCEntity,
     PlayerEntity,
 )
-from game_engine.models.event import (
-    EventActor,
-    EventVerb,
-    EventVisibility,
-    GameEvent,
-)
+from game_engine.models.event import EventActor, EventVerb, EventVisibility, GameEvent
+from game_engine.models.slice import SliceRequest
 from game_engine.persistence.event_log import EventLogger
+from game_engine.persistence.save_manager import SaveManager
 
-# ── ANSI colors ───────────────────────────────────────────────────────────────
-
-RESET  = "\033[0m"
-BOLD   = "\033[1m"
-DIM    = "\033[2m"
-RED    = "\033[31m"
-GREEN  = "\033[32m"
-YELLOW = "\033[33m"
-BLUE   = "\033[34m"
-CYAN   = "\033[36m"
-WHITE  = "\033[37m"
-MAGENTA = "\033[35m"
-
-
-def sep(title: str = "", char: str = "─", width: int = 60) -> None:
-    if title:
-        pad = (width - len(title) - 2) // 2
-        print(f"\n{DIM}{char * pad}{RESET} {BOLD}{title}{RESET} {DIM}{char * pad}{RESET}")
-    else:
-        print(f"{DIM}{char * width}{RESET}")
+# ── ANSI ─────────────────────────────────────────────────────────────────────
+R   = "\033[0m"
+B   = "\033[1m"
+DIM = "\033[2m"
+CYN = "\033[96m"
+GRN = "\033[92m"
+YLW = "\033[93m"
+RED = "\033[91m"
+MAG = "\033[95m"
+BLU = "\033[94m"
 
 
-def tick_label(clock: WorldClock) -> str:
-    wt = clock.world_time
-    day_abs = wt.to_absolute_days()
-    return f"{DIM}[tick {clock.tick.value:>4} | day {day_abs:>3} | {wt.moment}]{RESET}"
+def hdr(title: str) -> None:
+    print(f"\n{B}{CYN}{'=' * 62}{R}")
+    print(f"{B}{CYN}  {title}{R}")
+    print(f"{B}{CYN}{'=' * 62}{R}")
 
 
-def fmt_event(event: GameEvent, prefix: str = "") -> str:
-    verb_color = RED if event.type == "conflict" else CYAN if event.type == "religion" else YELLOW
-    cascade = f" {DIM}(cascade {event.cascade_depth}){RESET}" if event.cascade_depth > 0 else ""
-    location = event.payload.get("location_id", "?")
-    return (
-        f"{prefix}{verb_color}{BOLD}{event.verb.upper()}{RESET}"
-        f" by {WHITE}{event.emitter.name}{RESET}"
-        f" @ {BLUE}{location}{RESET}"
-        f"{cascade}"
-    )
+def sec(title: str) -> None:
+    print(f"\n{B}{YLW}>> {title}{R}")
 
 
-def fmt_kb_entry(entry, event: GameEvent) -> str:
-    certainty_color = GREEN if entry.certainty >= 0.9 else YELLOW if entry.certainty >= 0.5 else MAGENTA
-    return (
-        f"  {certainty_color}[{entry.how_learned} {entry.certainty:.1f}]{RESET} "
-        f"{event.verb.upper()} by {event.emitter.name}"
-    )
+def ok(msg: str) -> None:   print(f"  {GRN}[OK]{R}  {msg}")
+def nfo(msg: str) -> None:  print(f"  {DIM}     {msg}{R}")
+def wrn(msg: str) -> None:  print(f"  {YLW}[!]{R}  {msg}")
 
 
-# ── Setup ─────────────────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-def make_world_time(day: int = 1, moment: str = DayMoment.MORNING) -> WorldTime:
-    return WorldTime(year=1, season="spring", day=day, moment=moment)
+def wt(year=1, season="autumn", day=1, moment=DayMoment.MORNING) -> WorldTime:
+    return WorldTime(year=year, season=season, day=day, moment=moment)
 
 
-def make_player(location: str = "loc_tavern") -> PlayerEntity:
-    meta = EntityMeta(
-        created_at=make_world_time(),
-        created_by="system",
-        status=EntityStatus.ACTIVE,
-    )
-    identity = EntityIdentity(name="Elan Morin", age=25, gender="m")
+def meta(world_time: WorldTime) -> EntityMeta:
+    return EntityMeta(created_at=world_time, created_by="demo", status=EntityStatus.ACTIVE)
+
+
+def make_player(location: str = "loc_city") -> PlayerEntity:
+    t = wt()
     return PlayerEntity(
         id="player_elan",
-        meta=meta,
-        identity=identity,
-        mechanical={"location_id": location},
+        meta=meta(t),
+        identity=EntityIdentity(name="Elan Voss"),
+        mechanical={"location_id": location, "level": 1, "xp": 0},
     )
 
 
-def make_npc(npc_id: str, name: str, location: str) -> NPCEntity:
-    meta = EntityMeta(
-        created_at=make_world_time(),
-        created_by="system",
-        status=EntityStatus.ACTIVE,
-    )
-    identity = EntityIdentity(name=name, age=40, gender="m")
-    behaviour = NPCBehaviour(faction_id="faction_iron_hand")
+def make_npc(npc_id: str, name: str, location: str,
+             traits: list[str] | None = None) -> NPCEntity:
+    t = wt()
     return NPCEntity(
         id=npc_id,
-        meta=meta,
-        identity=identity,
+        meta=meta(t),
+        identity=EntityIdentity(name=name),
         mechanical={"location_id": location},
-        behaviour=behaviour,
+        behaviour=NPCBehaviour(personality_traits=traits or []),
     )
 
 
-def make_event(
-    verb: str,
-    emitter_id: str,
-    emitter_name: str,
-    location_id: str,
-    event_type: str = "conflict",
-    scope: str = "regional",
-    known_to: list[str] | None = None,
-    clock: WorldClock | None = None,
-    cascade_depth: int = 0,
-    parent_event_id: str | None = None,
-) -> GameEvent:
-    wt = clock.world_time if clock else make_world_time()
-    tick = clock.tick if clock else GameTick(0)
+def make_event_manual(verb: str, emitter_id: str, emitter_name: str,
+                      kind: EntityKind, location: str, event_type: str,
+                      scope: str, clock: WorldClock) -> GameEvent:
     return GameEvent(
-        tick=tick,
-        world_time=wt,
+        tick=clock.advance_tick(),
+        world_time=clock.world_time,
         type=event_type,
         verb=verb,
-        emitter=EventActor(id=emitter_id, kind=EntityKind.NPC, name=emitter_name),
-        visibility=EventVisibility(scope=scope, known_to=known_to or []),
-        payload={"location_id": location_id},
-        cascade_depth=cascade_depth,
-        parent_event_id=parent_event_id,
+        emitter=EventActor(id=emitter_id, kind=kind, name=emitter_name),
+        visibility=EventVisibility(scope=scope),
+        payload={"location_id": location},
     )
 
 
-# ── Main demo ─────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 async def run_demo() -> None:
-    rng = random.Random(42)  # seed fisso per risultati riproducibili
+    rng = random.Random(42)
 
-    sep("AGENTIC DUNGEONS — Game Engine Demo", "═")
-    print(f"\n{DIM}Fasi implementate: 1 (Modelli), 2 (Visibilità + Persistenza), 3 (ConsequenceEngine){RESET}")
-    print(f"{DIM}Seed RNG: 42 (risultati deterministici){RESET}\n")
+    hdr("AGENTIC DUNGEONS — Game Engine Demo (Fasi 1-3, 5-6, 8-9)")
 
-    # ── Inizializzazione componenti ───────────────────────────────────────────
-    sep("Setup mondo")
+    # ─────────────────────────────────────────────────────────────────────────
+    # 1. SETUP
+    # ─────────────────────────────────────────────────────────────────────────
+    sec("1. Setup — WorldClock, WorldState, Entità")
 
-    clock = WorldClock()
-    ws = WorldState()
+    clock    = WorldClock(initial_time=wt(year=1, season="autumn", day=1))
+    world    = WorldState()
     cooldown = CooldownTracker()
-    visibility_engine = VisibilityEngine()
-    kb = PlayerKnowledgeBase(player_id="player_elan")
+    vis_eng  = VisibilityEngine()
+    kb       = PlayerKnowledgeBase(player_id="player_elan")
+
     consequence_engine = ConsequenceEngine(
         cooldown_tracker=cooldown,
-        visibility_engine=visibility_engine,
+        visibility_engine=vis_eng,
         rng=rng,
     )
 
-    # EventLogger in-memory
     event_log = EventLogger(":memory:")
     await event_log.open()
     await event_log.init_schema()
 
-    # Entità
-    player = make_player(location="loc_tavern")
-    aldric = make_npc("npc_aldric", "Lord Aldric", "loc_fort_iron")
-    mira = make_npc("npc_mira", "Lady Mira", "loc_tavern")
+    player = make_player("loc_city")
+    world.add_entity(player)
+    world.player_knowledge = kb
 
-    ws.add_entity(player)
-    ws.add_entity(aldric)
-    ws.add_entity(mira)
+    ok(f"Player: {B}{player.identity.name}{R}  @  {BLU}loc_city{R}")
+    nfo(f"Anno {clock.world_time.year}, {clock.world_time.season.title()}, "
+        f"Giorno {clock.world_time.day}, {clock.world_time.moment.title()}")
 
-    print(f"  Player: {BOLD}{player.identity.name}{RESET} @ {BLUE}{player.mechanical['location_id']}{RESET}")
-    print(f"  NPC:    {BOLD}{aldric.identity.name}{RESET} @ {BLUE}{aldric.mechanical['location_id']}{RESET}")
-    print(f"  NPC:    {BOLD}{mira.identity.name}{RESET} @ {BLUE}{mira.mechanical['location_id']}{RESET}")
-    print(f"  Clock:  {tick_label(clock)}")
+    # ─────────────────────────────────────────────────────────────────────────
+    # 2. BRIDGE — SPAWN
+    # ─────────────────────────────────────────────────────────────────────────
+    sec("2. Bridge — spawn_entity")
 
-    # ── Scenario 1: Evento locale — il player è testimone diretto ────────────
-    sep("Scenario 1 — Testimone Diretto")
+    mira   = make_npc("npc_mira",   "Mira Soldath", "loc_city",   ["curious", "loyal"])
+    aldric = make_npc("npc_aldric", "Aldric Kael",  "loc_market", ["aggressive", "greedy"])
+    rebel  = make_npc("npc_rebel",  "Ser Dray",     "loc_forest", ["ruthless"])
 
-    clock.advance_tick()
-    event_brawl = make_event(
-        verb=EventVerb.ATTACKED,
-        emitter_id="npc_mira",
-        emitter_name="Lady Mira",
-        location_id="loc_tavern",   # stessa location del player!
-        scope="local",
-        clock=clock,
-    )
-    ws.append_event(event_brawl)
-    await event_log.append(event_brawl)
+    for npc, loc in [(mira, "loc_city"), (aldric, "loc_market"), (rebel, "loc_forest")]:
+        spawn_entity(npc, loc, world, clock)
+        ok(f"Spawned {B}{npc.identity.name}{R} → {BLU}{loc}{R}")
 
-    print(f"\n{tick_label(clock)}")
-    print(f"  Evento: {fmt_event(event_brawl, '  ')}")
+    nfo(f"Entities nel world state: {len(world.entity_store)}  |  "
+        f"Events logged: {len(world.event_log)}")
 
-    update = visibility_engine.evaluate(event_brawl, player, ws)
-    if update:
-        kb.apply_update(update, event_brawl, clock.world_time)
-        await event_log.mark_known(
-            "player_elan", event_brawl.id,
-            update.how_learned, update.certainty,
-            clock.world_time.to_absolute_days(),
-        )
-        print(f"  {GREEN}✓ Player vede direttamente l'evento{RESET}")
-        print(f"    → how_learned={BOLD}{update.how_learned}{RESET}, certainty={BOLD}{update.certainty}{RESET}")
-    else:
-        print(f"  {RED}✗ Player non vede l'evento{RESET}")
+    # ─────────────────────────────────────────────────────────────────────────
+    # 3. BRIDGE — COMBAT (tempo narrativo: FERMO)
+    # ─────────────────────────────────────────────────────────────────────────
+    sec("3. Bridge — resolve_combat  (WorldTime NON avanza)")
 
-    # ── Scenario 2: Evento remoto — dichiarazione di guerra ──────────────────
-    sep("Scenario 2 — Dichiarazione di Guerra (remota)")
+    units_before = clock.world_units_total
+    result = resolve_combat("player_elan", "npc_aldric", world, clock)
 
-    clock.advance_world_time("travel_long")   # avanza tempo narrativo
-    clock.advance_tick()
+    ok(f"{B}Elan Voss{R} ATTACKED {B}Aldric Kael{R}  →  outcome: {result['outcome']}")
+    if clock.world_units_total == units_before:
+        ok("WorldTime invariato — corretto (il combat non avanza il tempo narrativo)")
+    nfo(f"event_id: {result['event_id'][:12]}...")
 
-    event_war = make_event(
+    # ─────────────────────────────────────────────────────────────────────────
+    # 4. BRIDGE — MOVEMENT (tempo narrativo: AVANZA)
+    # ─────────────────────────────────────────────────────────────────────────
+    sec("4. Bridge — apply_movement  (WorldTime avanza)")
+
+    moment_before = clock.world_time.moment
+    ev_move = apply_movement("player_elan", "loc_city", "loc_market",
+                              "travel_short", world, clock)
+
+    ok(f"Elan si sposta: {BLU}loc_city{R} → {BLU}loc_market{R}  (travel_short, 4 world_units)")
+    ok(f"Momento: {moment_before.title()} → {clock.world_time.moment.title()}")
+    nfo(f"World units totali: {clock.world_units_total}")
+
+    updated_player = world.get_entity("player_elan")
+    nfo(f"Location aggiornata nel world state: {updated_player.mechanical['location_id']}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 5. BRIDGE — INVENTORY
+    # ─────────────────────────────────────────────────────────────────────────
+    sec("5. Bridge — apply_inventory")
+
+    apply_inventory("player_elan",  "item_sword",  "take",  world, clock)
+    apply_inventory("npc_aldric",   "item_pouch",  "steal", world, clock)
+    apply_inventory("player_elan",  "item_cloak",  "give",  world, clock)
+
+    traded = [e for e in world.event_log if e.verb == "traded"]
+    stolen = [e for e in world.event_log if e.verb == "stolen"]
+    ok(f"TRADED events: {len(traded)}  (take, give)")
+    ok(f"STOLEN events: {len(stolen)}  (steal)")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 6. BRIDGE — XP & LEVEL-UP
+    # ─────────────────────────────────────────────────────────────────────────
+    sec("6. Bridge — apply_xp + level-up  (soglia: level × 100 XP)")
+
+    p = world.get_entity("player_elan")
+    nfo(f"Prima — Livello: {p.mechanical['level']}  XP: {p.mechanical['xp']}")
+
+    r1 = apply_xp("player_elan", 50, world, clock)
+    r2 = apply_xp("player_elan", 60, world, clock)   # totale 110 ≥ 100 → level-up
+
+    p = world.get_entity("player_elan")
+    if r1 is None:
+        ok("apply_xp(+50): XP accumulati, nessun level-up")
+    if r2:
+        ok(f"apply_xp(+60): {B}LEVELED UP!{R} → Livello {p.mechanical['level']}, "
+           f"XP: {p.mechanical['xp']}")
+        nfo(f"LEVELED event: {r2[:12]}...")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 7. VISIBILITY ENGINE → PLAYER KNOWLEDGE BASE
+    # ─────────────────────────────────────────────────────────────────────────
+    sec("7. VisibilityEngine — filtraggio eventi → PlayerKnowledgeBase")
+
+    player_entity = world.get_entity("player_elan")
+    applied = 0
+    rumors  = 0
+    for event in world.event_log:
+        update = vis_eng.evaluate(event, player_entity, world)
+        if update:
+            kb.apply_update(update, event, clock.world_time)
+            await event_log.append(event)
+            await event_log.mark_known(
+                "player_elan", event.id,
+                update.how_learned, update.certainty,
+                clock.world_time.to_absolute_days(),
+            )
+            applied += 1
+            if update.certainty < 0.7:
+                rumors += 1
+
+    ok(f"Events nel world state: {len(world.event_log)}")
+    ok(f"Events filtrati in KB: {len(kb.known_events)}  (player non sa tutto)")
+    ok(f"Di cui rumors (certainty < 0.7): {rumors}")
+    if kb.known_entities:
+        ok(f"Entità note al player: {list(kb.known_entities.keys())}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 8. CONSEQUENCE ENGINE — cascata
+    # ─────────────────────────────────────────────────────────────────────────
+    sec("8. ConsequenceEngine — cascata causa-effetto")
+
+    # Evento trigger: dichiarazione di guerra remota
+    war_event = make_event_manual(
         verb=EventVerb.DECLARED_WAR,
-        emitter_id="npc_aldric",
-        emitter_name="Lord Aldric",
-        location_id="loc_fort_iron",   # lontano dal player
+        emitter_id="npc_rebel",
+        emitter_name="Ser Dray",
+        kind=EntityKind.NPC,
+        location="loc_forest",
+        event_type="conflict",
         scope="regional",
         clock=clock,
     )
-    ws.append_event(event_war)
-    await event_log.append(event_war)
+    world.append_event(war_event)
 
-    print(f"\n{tick_label(clock)}")
-    print(f"  Evento: {fmt_event(event_war, '  ')}")
-
-    # Visibilità diretta — player non è lì
-    update = visibility_engine.evaluate(event_war, player, ws)
-    if update:
-        kb.apply_update(update, event_war, clock.world_time)
-        print(f"  {GREEN}✓ Player apprende l'evento: {update.how_learned}{RESET}")
-    else:
-        print(f"  {YELLOW}~ Player non vede l'evento direttamente{RESET}")
-        print(f"    → Viene processato dal ConsequenceEngine...")
-
-    # ConsequenceEngine elabora la guerra
+    player_entity = world.get_entity("player_elan")
     consequences = consequence_engine.process_event(
-        event_war, ws, clock, player=player, player_kb=kb
+        war_event, world, clock,
+        player=player_entity, player_kb=kb,
     )
 
-    current_day = clock.world_time.to_absolute_days()
-    print(f"\n  {BOLD}ConsequenceEngine:{RESET} {len(consequences)} eventi immediati generati")
-    print(f"  {BOLD}ScheduledEvents:{RESET} {len(ws.scheduled_events)} eventi programmati")
-    for sc in ws.scheduled_events:
-        days_from_now = sc.trigger_world_day - current_day
-        verb = sc.event_template.get("verb", "?")
-        print(f"    → {CYAN}{verb.upper()}{RESET} in ~{days_from_now} giorni narrativi")
+    ok(f"Evento trigger: {B}DECLARED_WAR{R} (Ser Dray, loc_forest)")
+    ok(f"Conseguenze immediate: {len(consequences)}")
+    for c in consequences:
+        ok(f"  → {B}{c.verb.upper()}{R}  [{c.type}]  scope={c.visibility.scope}")
 
-    # ── Scenario 3: Il player sente un rumor ─────────────────────────────────
-    sep("Scenario 3 — Rumor (scope regional)")
+    if world.scheduled_events:
+        ok(f"Conseguenze schedulate (future): {len(world.scheduled_events)}")
+        current_day = clock.world_time.to_absolute_days()
+        for s in world.scheduled_events:
+            verb = s.event_template.get("verb", "?")
+            ok(f"  → {B}{verb.upper()}{R} al giorno narrativo {s.trigger_world_day} "
+               f"(in ~{s.trigger_world_day - current_day} giorni)")
 
-    clock.advance_tick()
+    # Simula salto temporale e processa gli scheduled events
+    for _ in range(15):
+        clock.advance_world_time("rest_full")
 
-    event_rumor = make_event(
-        verb=EventVerb.RUMORED,
-        emitter_id="npc_bard",
-        emitter_name="Il Bardo",
-        location_id="loc_crossroads",
-        event_type="social",
-        scope="regional",   # raggiunge tutti
-        clock=clock,
-    )
-    ws.append_event(event_rumor)
-    await event_log.append(event_rumor)
-
-    print(f"\n{tick_label(clock)}")
-    print(f"  Evento: {fmt_event(event_rumor, '  ')}")
-
-    update = visibility_engine.evaluate(event_rumor, player, ws)
-    if update:
-        kb.apply_update(update, event_rumor, clock.world_time)
-        await event_log.mark_known(
-            "player_elan", event_rumor.id,
-            update.how_learned, update.certainty,
-            clock.world_time.to_absolute_days(),
-        )
-        print(f"  {MAGENTA}✓ Player sente un rumor{RESET}")
-        print(f"    → how_learned={BOLD}{update.how_learned}{RESET}, certainty={BOLD}{update.certainty}{RESET}")
-        print(f"    → Rumor attivi nella KB: {len(kb.active_rumors)}")
-
-    # ── Scenario 4: Fast-forward giorni narrativi (SKIP simulato) ────────────
-    sep("Scenario 4 — Salto temporale (SKIP simulato)")
-
-    days_to_skip = 12
-    print(f"\n  Salto di {BOLD}{days_to_skip} giorni narrativi{RESET}...")
-
-    for d in range(days_to_skip):
-        clock.advance_world_time("rest_full")   # 20 world_units = 1 giorno narrativo
-        clock.advance_tick()
-
-    current_day = clock.world_time.to_absolute_days()
-    print(f"  {tick_label(clock)}")
-    print(f"  Giorno assoluto: {BOLD}{current_day}{RESET}")
-
-    # Processa gli eventi schedulati scaduti
     processor = ScheduledEventProcessor(consequence_engine)
-    triggered = processor.run(ws, clock, player=player, player_kb=kb)
+    triggered = processor.run(world, clock, player=player_entity, player_kb=kb)
+    if triggered:
+        ok(f"Dopo 15 giorni narrativi — {len(triggered)} scheduled events scattati:")
+        for ev in triggered:
+            ok(f"  → {B}{ev.verb.upper()}{R}  ({ev.type})")
 
-    print(f"\n  {BOLD}ScheduledEventProcessor:{RESET} {len(triggered)} eventi scaduti elaborati")
-    for ev in triggered:
-        print(f"    {fmt_event(ev, '  → ')}")
-        update = visibility_engine.evaluate(ev, player, ws)
-        if update:
-            print(f"       {GREEN}↳ Player viene informato: {update.how_learned} ({update.certainty}){RESET}")
-            await event_log.append(ev)
-            await event_log.mark_known(
-                "player_elan", ev.id,
-                update.how_learned, update.certainty,
-                current_day,
-            )
+    # ─────────────────────────────────────────────────────────────────────────
+    # 9. NARRATIVE SLICE
+    # ─────────────────────────────────────────────────────────────────────────
+    sec("9. NarrativeSlice — contesto per l'Agente Narrativo  (solo KB)")
 
-    remaining = len(ws.scheduled_events)
-    print(f"  ScheduledEvents rimanenti: {remaining}")
+    narrative_builder = NarrativeSliceBuilder()
+    request = SliceRequest(
+        agent="narrative",
+        focus_location_id="loc_market",
+        task="Descrivi la situazione al player",
+        from_world_day=0,
+        to_world_day=100_000,
+    )
 
-    # ── Riepilogo PlayerKnowledgeBase ─────────────────────────────────────────
-    sep("Riepilogo — PlayerKnowledgeBase")
+    player_entity = world.get_entity("player_elan")
+    nslice = narrative_builder.build(kb, world, request, player_entity)
 
-    event_map = {e.id: e for e in ws.event_log}
-    known = kb.known_events
+    loc_id   = nslice.focus_location.get("id", "?")
+    loc_mood = nslice.focus_location.get("mood", "peaceful")
+    ok(f"NarrativeSlice costruita {B}SOLO{R} da PlayerKnowledgeBase")
+    ok(f"Location focus: {BLU}{loc_id}{R}  |  Momento: {nslice.day_moment}")
+    ok(f"Mood location: {B}{loc_mood}{R}")
+    ok(f"Eventi noti recenti: {len(nslice.known_events_recent)}")
+    if nslice.known_events_recent:
+        ev = nslice.known_events_recent[0]
+        cert = f"certezza {ev.certainty:.0%}" if ev.certainty < 1.0 else "testimone diretto"
+        ok(f"  Ultimo: [{ev.verb}] da {ev.emitter_name}  ({cert})")
+    ok(f"NPC visibili: {len(nslice.npcs_in_focus)}")
+    for n in nslice.npcs_in_focus:
+        ok(f"  -> {n.name}  @  {n.last_known_location}")
+    if nslice.active_rumors:
+        wrn(f"Rumors attivi nel slice: {len(nslice.active_rumors)}")
 
-    print(f"\n  Il player {BOLD}{player.identity.name}{RESET} conosce {BOLD}{len(known)}{RESET} eventi:\n")
-    for entry in known:
-        ev = event_map.get(entry.event_id)
-        if ev:
-            print(fmt_kb_entry(entry, ev))
+    # ─────────────────────────────────────────────────────────────────────────
+    # 10. QUEST SLICE
+    # ─────────────────────────────────────────────────────────────────────────
+    sec("10. QuestSlice — contesto per l'Agente Quest  (world state globale)")
 
-    print(f"\n  Rumor attivi: {BOLD}{len(kb.active_rumors)}{RESET}")
-    for rumor_id in kb.active_rumors:
-        ev = event_map.get(rumor_id)
-        if ev:
-            print(f"  {MAGENTA}? {ev.verb.upper()} by {ev.emitter.name}{RESET}")
+    quest_builder = QuestSliceBuilder()
+    qrequest = SliceRequest(
+        agent="quest",
+        focus_location_id="loc_market",
+        task="Genera una quest basata sulle tensioni del mondo",
+        from_world_day=0,
+        to_world_day=100_000,
+    )
 
-    # ── Riepilogo EventLog SQLite ─────────────────────────────────────────────
-    sep("Riepilogo — EventLog SQLite")
+    qslice = quest_builder.build(world, qrequest, player_entity)
 
-    all_events = await event_log.query_since(world_day=0)
-    player_events = await event_log.query_since(world_day=0, player_id="player_elan")
+    ok(f"QuestSlice costruita dal {B}world state globale{R} (omnisciente)")
+    ok(f"Eventi visibili all'agente Quest: {len(qslice.recent_events)}")
+    ok(f"Tension points rilevati: {len(qslice.tension_points)}")
+    for tp in qslice.tension_points:
+        urgency_color = RED if tp.urgency == "critical" else YLW
+        ok(f"  [!!] [{urgency_color}{tp.urgency.upper()}{R}]  {tp.description[:65]}")
+    nfo("Il Quest Agent SA cose che il player NON conosce ancora")
 
-    print(f"\n  Totale eventi nel DB:           {BOLD}{len(all_events)}{RESET}")
-    print(f"  Eventi noti al player nel DB:   {BOLD}{len(player_events)}{RESET}")
+    # ─────────────────────────────────────────────────────────────────────────
+    # 11. ACTION SYSTEM
+    # ─────────────────────────────────────────────────────────────────────────
+    sec("11. ActionFilterEngine + IntentScheduler")
 
-    if player_events:
-        print(f"\n  Dettaglio eventi noti (dal DB):")
-        for row in player_events:
-            lrn = row.get("how_learned", "?")
-            cert = row.get("certainty", 0)
-            cert_color = GREEN if cert >= 0.9 else YELLOW if cert >= 0.5 else MAGENTA
-            print(
-                f"  {cert_color}[{lrn} {cert:.1f}]{RESET}"
-                f" {row['verb'].upper()} by {row['emitter_name']}"
-            )
+    filter_engine = ActionFilterEngine()
+    scheduler     = IntentScheduler()
 
-    # ── Stato motore ──────────────────────────────────────────────────────────
-    sep("Stato Motore")
+    player_entity = world.get_entity("player_elan")
+    menu = filter_engine.build_menu(world, player_entity, clock)
 
-    print(f"""
-  {BOLD}WorldClock{RESET}
-    Tick:          {clock.tick.value}
-    WorldTime:     {clock.world_time}
-    Giorno ass.:   {clock.world_time.to_absolute_days()}
+    ok(f"Menu azioni per {B}{player_entity.identity.name}{R} "
+       f"@ {BLU}{player_entity.mechanical['location_id']}{R}:")
+    for action in menu:
+        cost_str = f"({action.world_time_cost} wu)" if action.world_time_cost > 0 else "(immediata)"
+        tgt_str  = f" → {action.target_id}" if action.target_id else ""
+        ok(f"  [{action.action_type}]  {action.label}{tgt_str}  {DIM}{cost_str}{R}")
 
-  {BOLD}WorldState{RESET}
-    Entità:        {len(ws.entity_store)}
-    Eventi log:    {len(ws.event_log)}
-    Scheduled:     {len(ws.scheduled_events)}
-    Cooldowns:     {len(cooldown._last_triggered)}
+    # Schedula la prima azione con costo
+    slow = [a for a in menu if a.world_time_cost > 0]
+    if slow:
+        chosen = slow[0]
+        intent = scheduler.schedule(chosen, clock)
+        ok(f"\nAzione schedulata: '{chosen.label}'")
+        ok(f"  Status: {intent.status}  |  completa al giorno: {intent.completes_at_world_day}")
 
-  {BOLD}PlayerKnowledgeBase{RESET}
-    Noti:          {len(kb.known_events)}
-    Rumor attivi:  {len(kb.active_rumors)}
-    Entità note:   {len(kb.known_entities)}
+    # ─────────────────────────────────────────────────────────────────────────
+    # 12. SAVE & LOAD
+    # ─────────────────────────────────────────────────────────────────────────
+    sec("12. SaveManager — save + load  (msgpack + JSON)")
 
-  {BOLD}EventLogger (SQLite :memory:){RESET}
-    Tot. eventi:   {len(all_events)}
-    Noti al player:{len(player_events)}
-""")
+    config = {
+        "seed": 42,
+        "flow_ratio": 30,
+        "world_name": "Aethoria",
+        "player_name": player.identity.name,
+    }
 
-    sep("Fasi mancanti", "─")
-    print(f"""
-  {DIM}Fase 4 — Tick System & World Loop (asyncio): non implementata
-  Fase 5 — Context Slice System (per gli agenti AI): non implementata
-  Fase 6 — PlayerIntent & Interaction Manager: non implementata
-  Fase 7 — AI Agents (Anthropic SDK): non implementata
-  Fase 8 — Persistenza completa (msgpack snapshots): non implementata
-  Fase 9 — Bridge completo: stub
-  Fase 10 — Playtest & Tuning: non implementata{RESET}
-""")
+    with tempfile.TemporaryDirectory() as tmp:
+        save_dir = Path(tmp) / "demo_save"
+        sm = SaveManager(save_dir=save_dir)
+        sm.save(world, kb, config)
+
+        ok(f"Save in: {save_dir.name}/")
+        ok(f"  state.msgpack     → {(save_dir / 'state.msgpack').stat().st_size:,} bytes")
+        ok(f"  knowledge.msgpack → {(save_dir / 'knowledge.msgpack').stat().st_size:,} bytes")
+        ok(f"  config.json       → {(save_dir / 'config.json').stat().st_size:,} bytes")
+
+        loaded_world, loaded_kb, loaded_config = sm.load()
+
+        ok(f"\nLoad — round-trip verificato:")
+        ok(f"  Entities:       {len(loaded_world.entity_store):>3}  "
+           f"(orig: {len(world.entity_store)})")
+        ok(f"  Events:         {len(loaded_world.event_log):>3}  "
+           f"(orig: {len(world.event_log)})")
+        ok(f"  Scheduled:      {len(loaded_world.scheduled_events):>3}  "
+           f"(orig: {len(world.scheduled_events)})")
+        ok(f"  KB known_events:{len(loaded_kb.known_events):>3}  "
+           f"(orig: {len(kb.known_events)})")
+        ok(f"  Config: world='{loaded_config['world_name']}'  seed={loaded_config['seed']}")
+
+        lp = loaded_world.get_entity("player_elan")
+        ok(f"  Player lvl: {lp.mechanical['level']}  xp: {lp.mechanical['xp']}  "
+           f"loc: {lp.mechanical['location_id']}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # RIEPILOGO
+    # ─────────────────────────────────────────────────────────────────────────
+    hdr("RIEPILOGO STATO FINALE")
 
     await event_log.close()
-    sep("Fine demo", "═")
+
+    print(f"""
+  {B}WorldClock{R}
+    GameTick:      {clock.tick.value}
+    WorldTime:     Anno {clock.world_time.year}, {clock.world_time.season.title()},
+                   Giorno {clock.world_time.day}, {clock.world_time.moment.title()}
+    Giorno ass.:   {clock.world_time.to_absolute_days()}
+    World units:   {clock.world_units_total}
+
+  {B}WorldState{R}
+    Entities:      {len(world.entity_store)}
+    Events log:    {len(world.event_log)}
+    Scheduled:     {len(world.scheduled_events)}
+    Cooldowns:     {len(cooldown._last_triggered)}
+
+  {B}PlayerKnowledgeBase{R}
+    Known events:  {len(kb.known_events)}
+    Rumors:        {len(kb.active_rumors)}
+    Known entities:{len(kb.known_entities)}
+
+  {B}Player (Elan Voss){R}
+    Livello:       {world.get_entity("player_elan").mechanical["level"]}
+    XP:            {world.get_entity("player_elan").mechanical["xp"]}
+    Location:      {world.get_entity("player_elan").mechanical["location_id"]}
+
+  {DIM}Fasi non ancora implementate: 4 (WorldLoop), 7 (AI Agents), 10 (Playtest){R}
+""")
 
 
 if __name__ == "__main__":
