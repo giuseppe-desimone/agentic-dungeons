@@ -1,1 +1,0 @@
-The portrait of a necromancer, in a dark room, holding a candle. dark fantasy style.

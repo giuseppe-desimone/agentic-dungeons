@@ -1,4 +1,4 @@
-from map.map_engine import WorldEngineRunner, WorldConfig
+from generation.map.map_generator import WorldEngineRunner, WorldConfig
 
 if __name__ == "__main__":
     world_cfg = WorldConfig

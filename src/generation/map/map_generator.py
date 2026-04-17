@@ -3,7 +3,7 @@ from PIL import Image
 import numpy as np
 import h5py
 from worldengine.cli.main import main
-from map.map_config import WorldConfig, biome_colors
+from generation.map.map_config import WorldConfig, biome_colors
 
 """
 usage: usage: worldengine [options] [world|plates|ancient_map|info|export]
