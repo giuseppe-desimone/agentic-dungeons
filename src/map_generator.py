@@ -3,7 +3,7 @@ from PIL import Image
 import numpy as np
 import h5py
 from worldengine.cli.main import main
-from generation.map.map_config import WorldConfig, biome_colors
+from src.map_config import WorldConfig, biome_colors
 
 """
 usage: usage: worldengine [options] [world|plates|ancient_map|info|export]
@@ -399,8 +399,8 @@ class WorldEngineRunner:
         Converte le temperature astratte in gradi Celsius tramite una semplice
         interpolazione lineare tra un valore minimo e massimo desiderato.
         """
-        MIN_CELSIUS = -50.0  # Temperatura minima reale desiderata
-        MAX_CELSIUS = 60.0   # Temperatura massima reale desiderata
+        MIN_CELSIUS = -750.0  # Temperatura minima reale desiderata
+        MAX_CELSIUS = 55.0   # Temperatura massima reale desiderata
         
         delta = max_val - min_val
         
