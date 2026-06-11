@@ -1,4 +1,11 @@
+import logging
 from src.map_generator import WorldEngineRunner, WorldConfig
+
+# Configurazione base per visualizzare i log sulla console
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 if __name__ == "__main__":
     world_cfg = WorldConfig
@@ -11,4 +18,4 @@ if __name__ == "__main__":
     runner = WorldEngineRunner(world_cfg)
     runner.run()
     
-    print("\nWorkflow completed successfully.")
+    logging.info("\nWorkflow completed successfully.")

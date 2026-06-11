@@ -1,0 +1,38 @@
+@startuml
+!theme toy
+skinparam componentStyle rectangle
+
+title Architettura Semplificata di un Agente Multi-Nodo
+
+actor Utente as User
+
+package "Sistema Multi-Agente Multi-Nodo" {
+    component "Orchestratore / Router\n(Nodo Centrale)" as Orchestrator
+    database "Memoria Condivisa\n(Stato / Contesto)" as Memory
+
+    package "Nodi Operativi (Worker Nodes)" {
+        component "Nodo Ricerca\n(Web Search)" as NodeA
+        component "Nodo Analisi\n(Data Crunching)" as NodeB
+        component "Nodo Generazione\n(LLM Writer)" as NodeC
+    }
+
+    package "Tool Chiamabili (Callable Tools)" {
+        component "Generazione Del Mondo\n(Map Generator)" as ToolA
+        component "Generazione della Lore\n(Lore Generator)" as ToolB
+    }
+}
+
+' Flusso delle interazioni
+User --> Orchestrator : 1. Invia Richiesta (Prompt)
+Orchestrator <--> Memory : 2. Legge/Scrive Stato
+
+Orchestrator --> NodeA : 3a. Delega Task
+Orchestrator --> NodeB : 3b. Delega Task
+Orchestrator --> NodeC : 3c. Delega Task
+
+NodeA ..> Memory : Aggiorna risultati
+NodeB ..> Memory : Aggiorna risultati
+NodeC ..> Memory : Aggiorna risultati
+
+Orchestrator --> User : 4. Risposta Finale Fusa
+@endum

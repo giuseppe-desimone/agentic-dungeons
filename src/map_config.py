@@ -1,5 +1,8 @@
 import random
 
+MIN_CELSIUS = random.randint(-80, -70) # Temperatura minima reale desiderata
+MAX_CELSIUS = random.randint(50, 60) # Temperatura massima reale desiderata
+
 biome_colors = {
     "ocean": (23, 94, 145),
     "sea": (23, 94, 145),

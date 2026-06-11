@@ -2,8 +2,12 @@ import sys, os
 from PIL import Image
 import numpy as np
 import h5py
+import logging
 from worldengine.cli.main import main
-from src.map_config import WorldConfig, biome_colors
+from src.map_config import WorldConfig, biome_colors, MAX_CELSIUS, MIN_CELSIUS
+
+# Configurazione logger locale
+logger = logging.getLogger(__name__)
 
 """
 usage: usage: worldengine [options] [world|plates|ancient_map|info|export]
@@ -82,7 +86,7 @@ Export Options:
   --export-dimensions EXPORT_DIMENSIONS EXPORT_DIMENSIONS
                         Export to desired dimensions. (e.g. 4096 4096)
   --export-normalize EXPORT_NORMALIZE EXPORT_NORMALIZE
-                        Normalize the data set to between min and max. (e.g 0 255)
+                        Normalize the data set to between min and max. (e.g. 0 255)
   --export-subset EXPORT_SUBSET EXPORT_SUBSET EXPORT_SUBSET EXPORT_SUBSET
                         Normalize the data set to between min and max?
 """
@@ -251,10 +255,10 @@ class WorldEngineRunner:
         file_path = os.path.join(output_dir, f"{self.cfg.WORLD_NAME}.world")
 
         if not os.path.exists(file_path):
-            print(f"Errore: Il file {file_path} non esiste.")
+            logger.error(f"Errore: Il file {file_path} non esiste.")
             return
 
-        print(f"--- Injecting Dimensional Data into {file_path} ---")
+        logger.info(f"--- Injecting Dimensional Data into {file_path} ---")
 
         try:
             with h5py.File(file_path, 'r+') as f:
@@ -286,12 +290,12 @@ class WorldEngineRunner:
 
                 # Statistiche rapide per debug
                 mid_idx = len(widths) // 2
-                print(f"Datasets injected into group '{group_name}':")
-                print(f" > Equator Width:  {widths[mid_idx]} m | Area: {areas[mid_idx]} m^2 | Count: {tiles_per_row[mid_idx]}")
-                print(f" > Pole Width:     {widths[0]} m       | Area: {areas[0]} m^2       | Count: {tiles_per_row[0]}")
+                logger.info(f"Datasets injected into group '{group_name}':")
+                logger.info(f" > Equator Width:  {widths[mid_idx]} m | Area: {areas[mid_idx]} m^2 | Count: {tiles_per_row[mid_idx]}")
+                logger.info(f" > Pole Width:     {widths[0]} m       | Area: {areas[0]} m^2       | Count: {tiles_per_row[0]}")
 
         except Exception as e:
-            print(f"Errore durante l'iniezione HDF5: {e}")
+            logger.error(f"Errore durante l'iniezione HDF5: {e}", exc_info=True)
 
     def _rgb_to_biome_name(self, img_array):
         """
@@ -301,7 +305,7 @@ class WorldEngineRunner:
         rows, cols, _ = img_array.shape
         biome_names_map = np.full((rows, cols), "ocean", dtype=object)
 
-        print("--- Mapping pixels to biome names (this might take a moment) ---")
+        logger.info("--- Mapping pixels to biome names (this might take a moment) ---")
         
         for name, color_tuple in biome_colors.items():
             color_array = np.array(color_tuple)
@@ -394,14 +398,11 @@ class WorldEngineRunner:
         # Arrotonda e converte in Interi
         return np.round(mm_array).astype(np.int32)
 
-    def _temperature_to_celsius(self, temp_array, min_val, max_val):
+    def _temperature_to_celsius(self, temp_array, min_val, max_val, MAX_CELSIUS, MIN_CELSIUS):
         """
         Converte le temperature astratte in gradi Celsius tramite una semplice
         interpolazione lineare tra un valore minimo e massimo desiderato.
         """
-        MIN_CELSIUS = -750.0  # Temperatura minima reale desiderata
-        MAX_CELSIUS = 55.0   # Temperatura massima reale desiderata
-        
         delta = max_val - min_val
         
         # Prevenzione divisione per zero nel caso di mappe uniformi
@@ -432,13 +433,13 @@ class WorldEngineRunner:
         biome_img_path = os.path.join(output_dir, f"{self.cfg.WORLD_NAME}_biome.png")
 
         if not os.path.exists(world_file):
+            logger.warning(f"File non trovato durante l'iniezione: {world_file}")
             return
 
-        print(f"\n--- Injecting Normalized Data into {world_file} ---")
+        logger.info(f"\n--- Injecting Normalized Data into {world_file} ---")
 
         try:
             with h5py.File(world_file, 'r+') as f:
-                
                 # --- 1. CREAZIONE GRUPPO ---
                 norm_grp = f.require_group('normalized_data')
 
@@ -453,7 +454,7 @@ class WorldEngineRunner:
 
                     if 'elevation_meters' in norm_grp: del norm_grp['elevation_meters']
                     norm_grp.create_dataset('elevation_meters', data=meters_matrix, dtype='int32')
-                    print(f" > Elevation meters saved (Min: {np.min(meters_matrix)}m, Max: {np.max(meters_matrix)}m)")
+                    logger.info(f" > Elevation meters saved (Min: {np.min(meters_matrix)}m, Max: {np.max(meters_matrix)}m)")
 
                 # --- 3. HUMIDITY ---
                 if 'humidity/data' in f:
@@ -465,7 +466,7 @@ class WorldEngineRunner:
 
                     if 'humidity_percentage' in norm_grp: del norm_grp['humidity_percentage']
                     norm_grp.create_dataset('humidity_percentage', data=hum_percentage_matrix, dtype='int32')
-                    print(f" > Humidity percentage saved.")
+                    logger.info(f" > Humidity percentage saved.")
 
                 # --- 4. WATERMAP (SURFACE RUNOFF) ---
                 if 'watermap/data' in f:
@@ -476,7 +477,7 @@ class WorldEngineRunner:
 
                     if 'surface_runoff_mm' in norm_grp: del norm_grp['surface_runoff_mm']
                     norm_grp.create_dataset('surface_runoff_mm', data=runoff_matrix, dtype='int32')
-                    print(f" > Surface runoff saved.")
+                    logger.info(f" > Surface runoff saved.")
 
                 # --- 5. RIVER MAP (FLOW M³/S) ---
                 if 'river_map' in f:
@@ -487,7 +488,7 @@ class WorldEngineRunner:
 
                     if 'river_flow_m3s' in norm_grp: del norm_grp['river_flow_m3s']
                     norm_grp.create_dataset('river_flow_m3s', data=flow_matrix, dtype='int32')
-                    print(f" > River flow saved.")
+                    logger.info(f" > River flow saved.")
 
                 # --- 6. PRECIPITATION (MM/YEAR) ---
                 if 'precipitation/data' in f and 'precipitation/thresholds' in f:
@@ -501,7 +502,7 @@ class WorldEngineRunner:
 
                     if 'precipitation_mm' in norm_grp: del norm_grp['precipitation_mm']
                     norm_grp.create_dataset('precipitation_mm', data=precip_mm_matrix, dtype='int32')
-                    print(f" > Precipitation (mm/year) saved (Min: {np.min(precip_mm_matrix)}mm, Max: {np.max(precip_mm_matrix)}mm)")
+                    logger.info(f" > Precipitation (mm/year) saved (Min: {np.min(precip_mm_matrix)}mm, Max: {np.max(precip_mm_matrix)}mm)")
 
                 # --- 7. TEMPERATURE (CELSIUS) ---
                 if 'temperature/data' in f:
@@ -511,11 +512,11 @@ class WorldEngineRunner:
                     min_temp = np.min(temp_data)
                     max_temp = np.max(temp_data)
 
-                    celsius_matrix = self._temperature_to_celsius(temp_data, min_temp, max_temp)
+                    celsius_matrix = self._temperature_to_celsius(temp_data, min_temp, max_temp, MAX_CELSIUS, MIN_CELSIUS)
 
                     if 'temperature_celsius' in norm_grp: del norm_grp['temperature_celsius']
                     norm_grp.create_dataset('temperature_celsius', data=celsius_matrix, dtype='int32')
-                    print(f" > Temperature Celsius saved (Min: {np.min(celsius_matrix)}°C, Max: {np.max(celsius_matrix)}°C)")
+                    logger.info(f" > Temperature Celsius saved (Min: {np.min(celsius_matrix)}°C, Max: {np.max(celsius_matrix)}°C)")
 
                 # --- 8. BIOMES ---
                 if os.path.exists(biome_img_path):
@@ -527,11 +528,10 @@ class WorldEngineRunner:
                     if 'biome_names' in norm_grp: del norm_grp['biome_names']
                     dt = h5py.special_dtype(vlen=str)
                     norm_grp.create_dataset('biome_names', data=biome_names, dtype=dt)
-                    print(f" > Biome names saved.")
-              
+                    logger.info(f" > Biome names saved.")
+            
         except Exception as e:
-            print(f"Error injecting data: {e}")
-    # ==========================================================================
+            logger.error(f"Error injecting data: {e}", exc_info=True)
     
     def run(self):
         args_list = self._build_arguments()
@@ -540,23 +540,23 @@ class WorldEngineRunner:
 
         try:
             sys.argv = ["worldengine_script"] + args_list
-            print(f"\n>>> Running Worldengine with: {' '.join(args_list)}\n")
+            logger.info(f"\n>>> Running Worldengine with: {' '.join(args_list)}\n")
             main()
             generation_successful = True
         except SystemExit as e:
             if e.code == 0 or e.code is None:
-                print(f"\n>>> Worldengine finished successfully.")
+                logger.info(f"\n>>> Worldengine finished successfully.")
                 generation_successful = True
             else:
-                print(f"\n>>> Worldengine failed (Exit Code: {e}).")
+                logger.error(f"\n>>> Worldengine failed (Exit Code: {e}).")
         except Exception as e:
-            print(f"\n>>> Error: {e}")
+            logger.error(f"\n>>> Error: {e}", exc_info=True)
         finally:
             sys.argv = original_argv
             
             if generation_successful:
                 try:
-                    print("\n--- Calculating Earth Dimensions ---")
+                    logger.info("\n--- Calculating Earth Dimensions ---")
                     
                     # 2. Calcolo Unificato dei Dataset Dimensionali
                     (d_widths, d_areas, d_sides, d_counts, radius) = self._generate_submap_dimentional_data()
@@ -567,9 +567,9 @@ class WorldEngineRunner:
                     # 4. salvataggio Biomi (Interi -> Stringhe da Immagine)
                     self._inject_normalized_data_in_hdf5()
                 except Exception as e:
-                    print(f"Error during post-generation processing: {e}")
+                    logger.error(f"Error during post-generation processing: {e}", exc_info=True)
             
-            print(">>> Done.\n")
+            logger.info(">>> Done.\n")
 
 if __name__ == "__main__":
     WorldEngineRunner(WorldConfig).run()
