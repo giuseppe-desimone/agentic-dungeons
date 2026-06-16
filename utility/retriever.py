@@ -70,5 +70,5 @@ def get_map_data(file_path):
         print(f"Errore: {e}")
 
 if __name__ == "__main__":
-    path = "assets/map/test.world" 
+    path = "assets/map/world.world" 
     get_map_data(path)

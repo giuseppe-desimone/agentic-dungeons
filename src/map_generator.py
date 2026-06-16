@@ -4,7 +4,7 @@ import numpy as np
 import h5py
 import logging
 from worldengine.cli.main import main
-from src.map_config import WorldConfig, biome_colors, MAX_CELSIUS, MIN_CELSIUS
+from src.map_config import WorldConfig, biome_colors, MAX_CELSIUS, MIN_CELSIUS, MAX_ALTITUDE, MIN_ABYSS
 
 # Configurazione logger locale
 logger = logging.getLogger(__name__)
@@ -203,99 +203,6 @@ class WorldEngineRunner:
                 params.extend([str(x) for x in c.EXPORT_SUBSET])
                 
         return params
-    
-    def _generate_submap_dimentional_data(self):
-        """
-        Calcola i dati dimensionali per ogni riga (latitudine) della mappa:
-        1. Larghezza del pixel in metri (dataset_widths)
-        2. Area del pixel in metri quadri (dataset_area)
-        3. Lato di un quadrato equivalente all'area (dataset_sqr_sides)
-        4. Numero di 'tile' reali che entrano nell'anello (dataset_real_tiles_per_row)
-        """
-        rows = self.cfg.HEIGHT
-        cols = self.cfg.WIDTH
-        EARTH_RADIUS = 6_371_000
-
-        # 1. Altezza costante del pixel (distanza Nord-Sud)
-        pixel_height = (np.pi * EARTH_RADIUS) / rows
-
-        # 2. Latitudini
-        step_lat = 180.0 / rows
-        latitudes_deg = np.linspace(90 - (step_lat/2), -90 + (step_lat/2), rows)
-        latitudes_rad = np.radians(latitudes_deg)
-
-        # DATASET 1: Larghezza pixel (variabile con la latitudine)
-        pixel_widths = (2 * np.pi * EARTH_RADIUS * np.cos(latitudes_rad)) / cols
-        
-        # DATASET 2: Area
-        areas = pixel_widths * pixel_height
-        
-        # DATASET 3: Lato quadrato equivalente
-        sqr_sides = np.sqrt(np.maximum(areas, 0))
-        
-        # DATASET 4: Conteggio Tile Reali (Densità anello)
-        exact_counts = cols * np.cos(latitudes_rad)
-        # Arrotondiamo e assicuriamo almeno 1 pixel
-        integer_counts = np.round(exact_counts).astype(np.int32)
-        integer_counts = np.maximum(integer_counts, 1)
-
-        # SALVATAGGIO DATASETS (Casting a int32 per risparmiare spazio e pulizia)
-        dataset_widths = np.round(pixel_widths).astype(np.int32)
-        dataset_area = np.round(areas).astype(np.int32)
-        dataset_sqr_sides = np.round(sqr_sides).astype(np.int32)
-        dataset_real_tiles_per_row = integer_counts
-        
-        return dataset_widths, dataset_area, dataset_sqr_sides, dataset_real_tiles_per_row, EARTH_RADIUS
-
-    def _inject_dimensions_into_hdf5(self, widths, areas, sides, tiles_per_row, radius):
-        """
-        Inietta i 4 dataset dimensionali (array 1D) nel file HDF5.
-        """
-        output_dir = getattr(self.cfg, 'OUTPUT_DIR', os.path.join("assets", "map"))
-        file_path = os.path.join(output_dir, f"{self.cfg.WORLD_NAME}.world")
-
-        if not os.path.exists(file_path):
-            logger.error(f"Errore: Il file {file_path} non esiste.")
-            return
-
-        logger.info(f"--- Injecting Dimensional Data into {file_path} ---")
-
-        try:
-            with h5py.File(file_path, 'r+') as f:
-                group_name = "dimensional_data"
-                if group_name in f: del f[group_name] 
-                
-                grp = f.create_group(group_name)
-
-                # --- 1. Pixel Widths ---
-                dset_w = grp.create_dataset("pixel_width_per_row", data=widths)
-                dset_w.attrs["unit"] = "meters"
-                dset_w.attrs["description"] = "Width of a pixel in meters at this latitude row"
-
-                # --- 2. Pixel Areas ---
-                dset_a = grp.create_dataset("pixel_area_per_row", data=areas)
-                dset_a.attrs["unit"] = "square meters"
-                dset_a.attrs["description"] = "Area of a single pixel at this latitude row"
-
-                # --- 3. Equivalent Side ---
-                dset_s = grp.create_dataset("pixel_sqr_side_per_row", data=sides)
-                dset_s.attrs["unit"] = "meters"
-                dset_s.attrs["description"] = "Side length of a square with area equivalent to the pixel"
-                dset_s.attrs["radius_used"] = radius
-
-                # --- 4. Tiles per Row (Ring Density) ---
-                dset_c = grp.create_dataset("valid_tiles_per_row", data=tiles_per_row)
-                dset_c.attrs["description"] = "Number of non-distorted 'real' squares fitting in this latitude ring"
-                dset_c.attrs["max_cols"] = self.cfg.WIDTH
-
-                # Statistiche rapide per debug
-                mid_idx = len(widths) // 2
-                logger.info(f"Datasets injected into group '{group_name}':")
-                logger.info(f" > Equator Width:  {widths[mid_idx]} m | Area: {areas[mid_idx]} m^2 | Count: {tiles_per_row[mid_idx]}")
-                logger.info(f" > Pole Width:     {widths[0]} m       | Area: {areas[0]} m^2       | Count: {tiles_per_row[0]}")
-
-        except Exception as e:
-            logger.error(f"Errore durante l'iniezione HDF5: {e}", exc_info=True)
 
     def _rgb_to_biome_name(self, img_array):
         """
@@ -305,7 +212,7 @@ class WorldEngineRunner:
         rows, cols, _ = img_array.shape
         biome_names_map = np.full((rows, cols), "ocean", dtype=object)
 
-        logger.info("--- Mapping pixels to biome names (this might take a moment) ---")
+        logger.info(" > Mapping pixels to biome names (this might take a moment) ---")
         
         for name, color_tuple in biome_colors.items():
             color_array = np.array(color_tuple)
@@ -316,25 +223,27 @@ class WorldEngineRunner:
         
         return biome_names_map
 
-    def _elevation_to_meters(self, elevation_array, sea_val, plain_val, hill_val):
+    def _elevation_to_meters(self, h5_file, MAX_ALTITUDE, MIN_ABYSS):
         """
-        Converte l'elevazione astratta in metri.
-        Mappa i threshold dinamici letti dal file: sea -> 0m, plain -> 300m, hill -> 600m.
-        Estrapola i valori esterni (es. montagne o fondali oceanici).
+        Semplificazione: 
+        - Valore 1.0 = 0 metri (Livello del mare).
+        - Valori > 1.0 = Scalati linearmente tra 0 e MAX_ALTITUDE basandosi sul max del dataset.
+        - Valori < 1.0 = Fondali marini (scalati proporzionalmente in negativo).
         """
-        meters_array = np.zeros_like(elevation_array, dtype=np.float32)
-
-        # Segmento 1: Sotto e fino alla pianura (include fondali marini)
-        mask_lower = elevation_array <= plain_val
-        scale_lower = 300.0 / (plain_val - sea_val) if plain_val != sea_val else 1.0
-        meters_array[mask_lower] = (elevation_array[mask_lower] - sea_val) * scale_lower
-
-        # Segmento 2: Sopra la pianura (colline e montagne)
-        mask_upper = elevation_array > plain_val
-        scale_upper = 300.0 / (hill_val - plain_val) if hill_val != plain_val else 1.0
-        meters_array[mask_upper] = 300.0 + (elevation_array[mask_upper] - plain_val) * scale_upper
-
-        # Arrotonda e converte in Interi
+        elevation_array = h5_file['elevation/data'][:]
+        
+        # Estraiamo i picchi reali del dataset attuale
+        min_val = np.min(elevation_array)
+        max_val = np.max(elevation_array)
+        
+        # Prepariamo i punti di ancoraggio (X = astratto, Y = metri reali)
+        # Nota: np.interp richiede che l'asse X sia rigorosamente crescente
+        x_vals = [min_val, 1.0, max_val]
+        y_vals = [-float(MIN_ABYSS), 0.0, float(MAX_ALTITUDE)]
+        
+        # Interpolazione vettorizzata su tutta la matrice
+        meters_array = np.interp(elevation_array, x_vals, y_vals)
+        
         return np.round(meters_array).astype(np.int32)
 
     def _humidity_to_percentage(self, humidity_array, min_val, max_val):
@@ -417,6 +326,35 @@ class WorldEngineRunner:
         
         return np.round(celsius_array).astype(np.int32)
     
+    def _icecaps_percentage(self, icecap_array, min_val, max_val):
+        """
+        Mappa i valori di icecaps in percentuale [0, 100].
+        Il valore min_val (primo valore > 0) corrisponderà all'1%,
+        mentre il valore max_val (il massimo registrato nel dataset) corrisponderà al 100%.
+        """
+        percentage_array = np.zeros_like(icecap_array, dtype=np.int32)
+        
+        # Maschera per i pixel che contengono effettivamente ghiaccio
+        mask_ice = icecap_array > 0
+        
+        delta = max_val - min_val
+        
+        if delta <= 0:
+            # Se min e max coincidono (es. un solo pixel di ghiaccio o tutti uguali)
+            # ma sono maggiori di zero, impostiamo tutto al 100%
+            if max_val > 0:
+                percentage_array[mask_ice] = 100
+            return percentage_array
+            
+        # Normalizza e scala a 0-100 solo dove c'è ghiaccio
+        normalized = (icecap_array[mask_ice] - min_val) / delta
+        
+        # Moltiplichiamo per 100. Limitiamo tra 1 e 100 così il ghiaccio presente 
+        # (anche se vicinissimo al minimo) parte da almeno 1% e non viene azzerato
+        percentage_array[mask_ice] = np.clip(np.round(normalized * 100.0), 1, 100).astype(np.int32)
+        
+        return percentage_array
+        
     def _inject_normalized_data_in_hdf5(self):
         """
         1. Crea un gruppo 'normalized_data'.
@@ -426,7 +364,9 @@ class WorldEngineRunner:
         5. River map -> river_flow_m3s (int m³/s)
         6. Precipitation -> precipitation_mm (int mm/anno)
         7. Temperature -> temperature_celsius (int °C)
-        8. Biomes -> biome_names (string)
+        8. Icecaps -> icecaps_percentage (int 0-100)
+        9. Biomes -> biome_names (string)
+        10. Ocean -> Ocean boolean mask (bool)
         """
         output_dir = getattr(self.cfg, 'OUTPUT_DIR', os.path.join("assets", "map"))
         world_file = os.path.join(output_dir, f"{self.cfg.WORLD_NAME}.world")
@@ -443,18 +383,15 @@ class WorldEngineRunner:
                 # --- 1. CREAZIONE GRUPPO ---
                 norm_grp = f.require_group('normalized_data')
 
-                # --- 2. ELEVATION ---
-                if 'elevation/data' in f and 'elevation/thresholds' in f:
-                    data = f['elevation/data'][:]
-                    sea = f['elevation/thresholds/sea'][()]
-                    plain = f['elevation/thresholds/plain'][()]
-                    hill = f['elevation/thresholds/hill'][()]
 
-                    meters_matrix = self._elevation_to_meters(data, sea, plain, hill)
+                # --- 2. ELEVATION ---
+                if 'elevation/data' in f:
+                    meters_matrix = self._elevation_to_meters(f, MAX_ALTITUDE, MIN_ABYSS)
 
                     if 'elevation_meters' in norm_grp: del norm_grp['elevation_meters']
                     norm_grp.create_dataset('elevation_meters', data=meters_matrix, dtype='int32')
                     logger.info(f" > Elevation meters saved (Min: {np.min(meters_matrix)}m, Max: {np.max(meters_matrix)}m)")
+
 
                 # --- 3. HUMIDITY ---
                 if 'humidity/data' in f:
@@ -468,6 +405,7 @@ class WorldEngineRunner:
                     norm_grp.create_dataset('humidity_percentage', data=hum_percentage_matrix, dtype='int32')
                     logger.info(f" > Humidity percentage saved.")
 
+
                 # --- 4. WATERMAP (SURFACE RUNOFF) ---
                 if 'watermap/data' in f:
                     water_data = f['watermap/data'][:]
@@ -479,6 +417,7 @@ class WorldEngineRunner:
                     norm_grp.create_dataset('surface_runoff_mm', data=runoff_matrix, dtype='int32')
                     logger.info(f" > Surface runoff saved.")
 
+
                 # --- 5. RIVER MAP (FLOW M³/S) ---
                 if 'river_map' in f:
                     river_data = f['river_map'][:]
@@ -489,6 +428,7 @@ class WorldEngineRunner:
                     if 'river_flow_m3s' in norm_grp: del norm_grp['river_flow_m3s']
                     norm_grp.create_dataset('river_flow_m3s', data=flow_matrix, dtype='int32')
                     logger.info(f" > River flow saved.")
+
 
                 # --- 6. PRECIPITATION (MM/YEAR) ---
                 if 'precipitation/data' in f and 'precipitation/thresholds' in f:
@@ -504,6 +444,7 @@ class WorldEngineRunner:
                     norm_grp.create_dataset('precipitation_mm', data=precip_mm_matrix, dtype='int32')
                     logger.info(f" > Precipitation (mm/year) saved (Min: {np.min(precip_mm_matrix)}mm, Max: {np.max(precip_mm_matrix)}mm)")
 
+
                 # --- 7. TEMPERATURE (CELSIUS) ---
                 if 'temperature/data' in f:
                     temp_data = f['temperature/data'][:]
@@ -518,7 +459,31 @@ class WorldEngineRunner:
                     norm_grp.create_dataset('temperature_celsius', data=celsius_matrix, dtype='int32')
                     logger.info(f" > Temperature Celsius saved (Min: {np.min(celsius_matrix)}°C, Max: {np.max(celsius_matrix)}°C)")
 
-                # --- 8. BIOMES ---
+
+                # --- 8. ICECAPS ---
+                if 'icecap' in f:
+                    icecap_data = f['icecap'][:]
+                    
+                    # Trova i pixel con ghiaccio (> 0) per isolare il range reale
+                    ice_pixels = icecap_data[icecap_data > 0]
+                    
+                    if ice_pixels.size > 0:
+                        min_ice = np.min(ice_pixels)
+                        max_ice = np.max(icecap_data)  # Prende il picco reale (es. 0.2342)
+                        
+                        # Eseguiamo la mappatura sul range dinamico reale
+                        icecaps_matrix = self._icecaps_percentage(icecap_data, min_ice, max_ice)
+                        logger.info(f" > Icecaps percentage saved (Range reale: {min_ice} -> {max_ice} mappato a 1-100%)")
+                    else:
+                        # Se non c'è ghiaccio nel mondo, creiamo una matrice di zeri
+                        icecaps_matrix = np.zeros_like(icecap_data, dtype=np.int32)
+                        logger.info(f" > Icecaps percentage saved (No ice detected in this world, filled with 0)")
+
+                    if 'icecaps_percentage' in norm_grp: del norm_grp['icecaps_percentage']
+                    norm_grp.create_dataset('icecaps_percentage', data=icecaps_matrix, dtype='int32')
+                    
+
+                # --- 9. BIOMES ---
                 if os.path.exists(biome_img_path):
                     with Image.open(biome_img_path) as img:
                         img_arr = np.array(img.convert('RGB'))
@@ -529,6 +494,13 @@ class WorldEngineRunner:
                     dt = h5py.special_dtype(vlen=str)
                     norm_grp.create_dataset('biome_names', data=biome_names, dtype=dt)
                     logger.info(f" > Biome names saved.")
+
+                
+                # --- 10. OCEAN ---
+                if 'ocean' in f:
+                    ocean_bool = f['ocean'][:]
+                    norm_grp.create_dataset('ocean_presence', data=ocean_bool, dtype='bool')
+                    logger.info(" > Ocean mask moved successfully into normalized_data.")
             
         except Exception as e:
             logger.error(f"Error injecting data: {e}", exc_info=True)
@@ -556,15 +528,6 @@ class WorldEngineRunner:
             
             if generation_successful:
                 try:
-                    logger.info("\n--- Calculating Earth Dimensions ---")
-                    
-                    # 2. Calcolo Unificato dei Dataset Dimensionali
-                    (d_widths, d_areas, d_sides, d_counts, radius) = self._generate_submap_dimentional_data()
-                    
-                    # 3. Iniezione nel file HDF5
-                    self._inject_dimensions_into_hdf5(d_widths, d_areas, d_sides, d_counts, radius)
-                    
-                    # 4. salvataggio Biomi (Interi -> Stringhe da Immagine)
                     self._inject_normalized_data_in_hdf5()
                 except Exception as e:
                     logger.error(f"Error during post-generation processing: {e}", exc_info=True)

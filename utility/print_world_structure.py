@@ -62,5 +62,5 @@ def analyze_file(filename):
 
 if __name__ == "__main__":
     # Inserisci qui il percorso del tuo file
-    file_path = "assets/map/test.world" 
+    file_path = "assets/map/world.world" 
     analyze_file(file_path)

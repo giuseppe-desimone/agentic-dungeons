@@ -3,6 +3,9 @@ import random
 MIN_CELSIUS = random.randint(-80, -70) # Temperatura minima reale desiderata
 MAX_CELSIUS = random.randint(50, 60) # Temperatura massima reale desiderata
 
+MAX_ALTITUDE = random.randint(8000, 10000) # altezza desiderata in metri del picco più alto al mondo.
+MIN_ABYSS = random.randint(300, 500)
+
 biome_colors = {
     "ocean": (23, 94, 145),
     "sea": (23, 94, 145),
@@ -61,14 +64,14 @@ class WorldConfig:
     
     # Output settings
     OUTPUT_DIR = "assets/map"
-    WORLD_NAME = "World"          # -n
+    WORLD_NAME = "world"          # -n
     USE_HDF5 = True               # --hdf5
     
     # --- 2. GENERATION PARAMETERS ---
     SEED = random.randint(0, 9999)# -s (cool ones: 3221, )
-    WIDTH = 2048                  # -x
-    HEIGHT = 1024                 # -y
-    NUM_PLATES = 10               # -q
+    WIDTH = 1000                  # -x
+    HEIGHT = 500                  # -y
+    NUM_PLATES = 15               # -q
     STEP = "full"                 # -t [plates|precipitations|full]
     RECURSION_LIMIT = 2000        # --recursion_limit
     

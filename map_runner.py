@@ -9,9 +9,9 @@ logging.basicConfig(
 
 if __name__ == "__main__":
     world_cfg = WorldConfig
-    world_cfg.WORLD_NAME = "test"
-    world_cfg.WIDTH = 1024
-    world_cfg.HEIGHT = 512
+    world_cfg.WORLD_NAME = "world"
+    world_cfg.WIDTH = 1000
+    world_cfg.HEIGHT = 500
     world_cfg.NUM_PLATES = 15
 
     
