@@ -354,6 +354,28 @@ class WorldEngineRunner:
         percentage_array[mask_ice] = np.clip(np.round(normalized * 100.0), 1, 100).astype(np.int32)
         
         return percentage_array
+    
+    def _lakemap_to_presence(self, lake_array):
+        """
+        Converte la lake_map in una matrice booleana.
+        Tutti i valori strettamente maggiori di zero diventano True (presenza di un lago).
+        """
+        # Restituisce direttamente un array di booleani (True dove > 0, False dove == 0)
+        return lake_array > 0
+
+    def _permeability_to_percentage(self, permeability_array, min_val, max_val):
+        """
+        Mappa i valori astratti di permeabilità in una percentuale [0, 100]
+        usando i minimi e massimi reali del dataset.
+        """
+        delta = max_val - min_val
+        if delta == 0:
+            return np.full_like(permeability_array, 50, dtype=np.int32) # Fallback neutro
+            
+        normalized = (permeability_array - min_val) / delta
+        percentage = np.clip(normalized * 100.0, 0, 100)
+        
+        return np.round(percentage).astype(np.int32)
         
     def _inject_normalized_data_in_hdf5(self):
         """
@@ -367,6 +389,9 @@ class WorldEngineRunner:
         8. Icecaps -> icecaps_percentage (int 0-100)
         9. Biomes -> biome_names (string)
         10. Ocean -> Ocean boolean mask (bool)
+        11. Plates -> plates_id (int32)
+        12. Lake map -> lake_map_percentage (int32 0-100)
+        13. Permeability -> permeability_percentage (int32 0-100)
         """
         output_dir = getattr(self.cfg, 'OUTPUT_DIR', os.path.join("assets", "map"))
         world_file = os.path.join(output_dir, f"{self.cfg.WORLD_NAME}.world")
@@ -501,6 +526,46 @@ class WorldEngineRunner:
                     ocean_bool = f['ocean'][:]
                     norm_grp.create_dataset('ocean_presence', data=ocean_bool, dtype='bool')
                     logger.info(" > Ocean mask moved successfully into normalized_data.")
+
+                
+                # --- 11. PLATES (ID DELLA PLACCA TETTONICA) ---
+                if 'plates' not in norm_grp:
+                    if 'plates' in f:
+                        plates_data = f['plates'][:]
+                        # Convertiamo in int32 per uniformità con gli altri indici/ID normalizzati
+                        norm_grp.create_dataset('plates_id', data=plates_data, dtype='int32')
+                        logger.info(f" > Plates ID copied successfully (Min ID: {np.min(plates_data)}, Max ID: {np.max(plates_data)}).")
+                else:
+                    logger.info(" > Plates ID already exists in normalized_data.")
+
+
+                if 'lake_presence' not in norm_grp:
+                    if 'lake_map' in f:
+                        lake_data = f['lake_map'][:]
+                        
+                        # Otteniamo la matrice booleana direttamente
+                        lake_bool_matrix = self._lakemap_to_presence(lake_data)
+                        
+                        # Creiamo il dataset con tipo 'bool'
+                        norm_grp.create_dataset('lake_presence', data=lake_bool_matrix, dtype='bool')
+                        logger.info(f" > Lake map presence saved as boolean mask (Total lake pixels: {np.sum(lake_bool_matrix)}).")
+                else:
+                    logger.info(" > Lake map presence already exists in normalized_data.")
+
+
+                # --- 13. PERMEABILITY (PERCENTUALE PERMEABILITÀ DEL SUOLO) ---
+                if 'permeability_percentage' not in norm_grp:
+                    if 'permeability/data' in f:
+                        perm_data = f['permeability/data'][:]
+                        min_perm = np.min(perm_data)
+                        max_perm = np.max(perm_data)
+                        
+                        perm_percentage_matrix = self._permeability_to_percentage(perm_data, min_perm, max_perm)
+                        
+                        norm_grp.create_dataset('permeability_percentage', data=perm_percentage_matrix, dtype='int32')
+                        logger.info(f" > Permeability percentage saved (Range: {min_perm}..{max_perm} -> Mapped to 0-100%).")
+                else:
+                    logger.info(" > Permeability percentage already exists in normalized_data.")
             
         except Exception as e:
             logger.error(f"Error injecting data: {e}", exc_info=True)
