@@ -4,7 +4,7 @@ import numpy as np
 import h5py
 import logging
 from worldengine.cli.main import main
-from src.map_config import WorldConfig, biome_colors, MAX_CELSIUS, MIN_CELSIUS, MAX_ALTITUDE, MIN_ABYSS
+from src.map_config import WorldConfig, biome_colors, MAX_CELSIUS, MIN_CELSIUS, MAX_ALTITUDE, MIN_ABYSS, PLANET_RADIOUS
 
 # Configurazione logger locale
 logger = logging.getLogger(__name__)
@@ -376,7 +376,35 @@ class WorldEngineRunner:
         percentage = np.clip(normalized * 100.0, 0, 100)
         
         return np.round(percentage).astype(np.int32)
+
+    def _calculate_pixel_widths_meters(self, height_pixels, width_pixels, planet_radius):
+        """
+        Calcola la larghezza in metri di un pixel per ciascuna coordinata Y (latitudine)
+        di una mappa equirettangolare.
+        Ritorna un array 1D di lunghezza 'height_pixels'.
+        """
+        logger.info(" > Calculating pixel widths in meters across latitudes...")
         
+        # Genera gli indici Y da 0 a height_pixels - 1
+        y_indices = np.arange(height_pixels)
+        
+        # Mappa Y alle latitudini in radianti:
+        # Y = 0 -> Polo Nord (+90° ovvero pi/2)
+        # Y = height_pixels - 1 -> Polo Sud (-90° ovvero -pi/2)
+        latitudes_rad = np.pi * (0.5 - y_indices / (height_pixels - 1))
+        
+        # Circonferenza massima all'equatore
+        equatorial_circumference = 2.0 * np.pi * planet_radius
+        
+        # Larghezza all'equatore (pixel perfetto)
+        base_width = equatorial_circumference / width_pixels
+        
+        # Applica il coseno per ottenere la larghezza scalata alla latitudine
+        widths_array = base_width * np.cos(latitudes_rad)
+        
+        # Arrotonda e converte in interi a 32-bit (metri)
+        return np.round(widths_array).astype(np.int32)
+
     def _inject_normalized_data_in_hdf5(self):
         """
         1. Crea un gruppo 'normalized_data'.
@@ -389,9 +417,9 @@ class WorldEngineRunner:
         8. Icecaps -> icecaps_percentage (int 0-100)
         9. Biomes -> biome_names (string)
         10. Ocean -> Ocean boolean mask (bool)
-        11. Plates -> plates_id (int32)
-        12. Lake map -> lake_map_percentage (int32 0-100)
-        13. Permeability -> permeability_percentage (int32 0-100)
+        11. Lake map -> lake_map_percentage (int32 0-100)
+        12. Permeability -> permeability_percentage (int32 0-100)
+        13. 
         """
         output_dir = getattr(self.cfg, 'OUTPUT_DIR', os.path.join("assets", "map"))
         world_file = os.path.join(output_dir, f"{self.cfg.WORLD_NAME}.world")
@@ -527,18 +555,7 @@ class WorldEngineRunner:
                     norm_grp.create_dataset('ocean_presence', data=ocean_bool, dtype='bool')
                     logger.info(" > Ocean mask moved successfully into normalized_data.")
 
-                
-                # --- 11. PLATES (ID DELLA PLACCA TETTONICA) ---
-                if 'plates' not in norm_grp:
-                    if 'plates' in f:
-                        plates_data = f['plates'][:]
-                        # Convertiamo in int32 per uniformità con gli altri indici/ID normalizzati
-                        norm_grp.create_dataset('plates_id', data=plates_data, dtype='int32')
-                        logger.info(f" > Plates ID copied successfully (Min ID: {np.min(plates_data)}, Max ID: {np.max(plates_data)}).")
-                else:
-                    logger.info(" > Plates ID already exists in normalized_data.")
-
-
+                # --- 11. LAKES ---
                 if 'lake_presence' not in norm_grp:
                     if 'lake_map' in f:
                         lake_data = f['lake_map'][:]
@@ -553,7 +570,7 @@ class WorldEngineRunner:
                     logger.info(" > Lake map presence already exists in normalized_data.")
 
 
-                # --- 13. PERMEABILITY (PERCENTUALE PERMEABILITÀ DEL SUOLO) ---
+                # --- 12. PERMEABILITY (PERCENTUALE PERMEABILITÀ DEL SUOLO) ---
                 if 'permeability_percentage' not in norm_grp:
                     if 'permeability/data' in f:
                         perm_data = f['permeability/data'][:]
@@ -566,7 +583,19 @@ class WorldEngineRunner:
                         logger.info(f" > Permeability percentage saved (Range: {min_perm}..{max_perm} -> Mapped to 0-100%).")
                 else:
                     logger.info(" > Permeability percentage already exists in normalized_data.")
-            
+
+                # --- 13. PIXEL WIDTHS PER LATITUDE ---
+                map_width = getattr(self.cfg, 'WIDTH')
+                map_height = getattr(self.cfg, 'HEIGHT')
+                pixel_widths_vector = self._calculate_pixel_widths_meters(
+                    height_pixels=map_height, 
+                    width_pixels=map_width, 
+                    planet_radius=PLANET_RADIOUS
+                )
+                if 'pixel_widths_lat_meters' in norm_grp: del norm_grp['pixel_widths_lat_meters']
+                norm_grp.create_dataset('pixel_widths_lat_meters', data=pixel_widths_vector, dtype='int32')
+                logger.info(f" > Pixel widths map saved (Equator: {pixel_widths_vector[map_height//2]}m, Pole Y=0: {pixel_widths_vector[0]}m).")
+
         except Exception as e:
             logger.error(f"Error injecting data: {e}", exc_info=True)
     

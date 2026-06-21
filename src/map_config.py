@@ -6,6 +6,9 @@ MAX_CELSIUS = random.randint(50, 60) # Temperatura massima reale desiderata
 MAX_ALTITUDE = random.randint(8000, 10000) # altezza desiderata in metri del picco più alto al mondo.
 MIN_ABYSS = 50
 
+PLANET_RADIOUS = 3185000
+
+
 biome_colors = {
     "ocean": (23, 94, 145),
     "sea": (23, 94, 145),
