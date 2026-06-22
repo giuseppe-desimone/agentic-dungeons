@@ -1,29 +1,14 @@
 import logging
 from pathlib import Path
 from src.map_generator import WorldEngineRunner, WorldConfig
-from src.caller import run_pipeline  # Se serve ancora internamente a src.caller, altrimenti usiamo run_pipeline definita sotto
+from src.caller import run_pipeline  
+from src.poi_engine import POIEngine
 
 # Configurazione base per visualizzare i log sulla console
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
-
-def generate_world_map():
-    """Fase 1: Generazione della mappa del mondo tramite WorldEngine."""
-    logging.info("Inizio generazione della mappa...")
-    
-    world_cfg = WorldConfig
-    world_cfg.WORLD_NAME = "world"
-    world_cfg.WIDTH = 1000
-    world_cfg.HEIGHT = 500
-    world_cfg.NUM_PLATES = 15
-
-    runner = WorldEngineRunner(world_cfg)
-    runner.run()
-    
-    logging.info("Mappa generata con successo.")
-
 
 def process_lm_studio_prompts():
     """Fase 2: Gestione dei prompt ed esecuzione della chiamata a LM Studio."""
@@ -51,19 +36,47 @@ def process_lm_studio_prompts():
         logging.error(f"Errore durante la chiamata a LM Studio: {e}")
 
 
+def generate_world_map():
+    """Fase 1: Generazione della mappa e analisi dei POI tramite Python."""
+    logging.info("Inizio generazione della mappa...")
+    
+    world_cfg = WorldConfig
+    world_cfg.WORLD_NAME = "world"
+    world_cfg.WIDTH = 1000
+    world_cfg.HEIGHT = 500
+    world_cfg.NUM_PLATES = 15
+
+    runner = WorldEngineRunner(world_cfg)
+    runner.run()
+    
+    logging.info("Mappa generata con successo. Avvio analisi deterministica dei POI...")
+    
+    # --- NUOVA PARTE DETERMINISTICA ---
+    poi_engine = POIEngine(world_cfg)
+    # Chiediamo a Python di trovare i 5 punti migliori sul pianeta distanti almeno 20 pixel l'uno dall'altro
+    lista_poi = poi_engine.extract_pois(num_civilizations=5, min_distance_pixels=20)
+    
+    for i, poi in enumerate(lista_poi):
+        logging.info(f"POI #{i+1} trovato alle coordinate (X: {poi['x']}, Y: {poi['y']}) | Bioma: {poi['biome']} | Score: {poi['score']:.2f}")
+        
+    return lista_poi # Ritorniamo i dati estratti
+
+
 def run_full_workflow():
     """Funzione di orchestrazione che unisce i due processi."""
     logging.info("=== Avvio Workflow Completo ===")
     
-    # 1. Genera la mappa
-    generate_world_map()
+    # 1. Genera la mappa ed estrae i POI via Python
+    pois = generate_world_map()
     
     print("\n" + "="*40 + "\n") # Separatore visivo in console
     
-    # 2. Chiama LM Studio
-    process_lm_studio_prompts()
-    
+    # 2. Passa i POI estratti a LM studio (Fase da implementare successivamente)
+    # Ad esempio puoi serializzare i POI in un file md temporaneo o passarli come argomento
+    #process_lm_studio_prompts() 
+
     logging.info("=== Workflow Completato Con Successo ===")
+    
 
 
 if __name__ == "__main__":

@@ -58,17 +58,13 @@ def main():
     """Esecuzione di default se il file viene lanciato direttamente."""
     current_dir = Path(__file__).resolve().parent
     
-    # Costruisce i percorsi di default
-    input_query_path = current_dir / "prompt" / "input_query.md"
-    system_prompt_path = current_dir / "prompt" / "system_prompt.md"
-    
     # Esegue la pipeline
-    response_message, reasoning = run_pipeline(system_prompt_path, input_query_path)
+    response_message, reasoning = run_pipeline((current_dir / "prompt" / "system_prompt.md"), (current_dir / "prompt" / "input_query.md"))
     
     # Mostra i risultati a schermo
-    if reasoning:
-        print("\n--- Ragionamento del Modello ---")
-        print(reasoning)
+    #if reasoning:
+    #    print("\n--- Ragionamento del Modello ---")
+    #    print(reasoning)
         
     print("\n--- Risposta Finale ---")
     print(response_message)
