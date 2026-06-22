@@ -1,5 +1,6 @@
 import requests
 from pathlib import Path
+from typing import Tuple
 
 def read_file(file_path: Path) -> str:
     """Legge il contenuto di un file di testo."""
@@ -9,7 +10,7 @@ def read_file(file_path: Path) -> str:
         print(f"Errore: File non trovato in {file_path}")
         raise
 
-def call_lm_studio(system_prompt: str, input_query: str):
+def call_lm_studio(system_prompt: str, input_query: str) -> Tuple[str, str]:
     """Effettua la chiamata diretta a LM Studio."""
     url = "http://localhost:1234/api/v1/chat"
     headers = {"Content-Type": "application/json"}
@@ -37,22 +38,32 @@ def call_lm_studio(system_prompt: str, input_query: str):
             
     return message_content, reasoning_content
 
-def main():
-    # Trova la cartella corrente in cui si trova questo script
-    current_dir = Path(__file__).resolve().parent
+def run_pipeline(system_prompt_path: Path, input_query_path: Path) -> Tuple[str, str]:
+    """
+    Funzione principale da chiamare esternamente.
+    Carica i file dai percorsi forniti ed esegue la chiamata a LM Studio.
+    """
+    print(f"Caricamento prompt da:\n - {system_prompt_path}\n - {input_query_path}")
     
-    # Costruisce i percorsi per i prompt
-    input_query_path = current_dir / "prompt" / "input_query.md"
-    system_prompt_path = current_dir / "prompt" / "system_prompt.md"
-
     # Carica i testi dai file markdown
-    input_query = read_file(input_query_path)
     system_prompt = read_file(system_prompt_path)
+    input_query = read_file(input_query_path)
 
     print("Inviando la richiesta a LM Studio...")
     
-    # Esegue la chiamata lineare
-    response_message, reasoning = call_lm_studio(system_prompt, input_query)
+    # Esegue la chiamata lineare e restituisce i testi
+    return call_lm_studio(system_prompt, input_query)
+
+def main():
+    """Esecuzione di default se il file viene lanciato direttamente."""
+    current_dir = Path(__file__).resolve().parent
+    
+    # Costruisce i percorsi di default
+    input_query_path = current_dir / "prompt" / "input_query.md"
+    system_prompt_path = current_dir / "prompt" / "system_prompt.md"
+    
+    # Esegue la pipeline
+    response_message, reasoning = run_pipeline(system_prompt_path, input_query_path)
     
     # Mostra i risultati a schermo
     if reasoning:
