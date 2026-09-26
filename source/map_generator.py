@@ -3,7 +3,7 @@ import numpy as np
 import h5py
 import logging
 from worldengine.cli.main import main
-from map_config import WorldConfig, biome_names_by_code, MAX_CELSIUS, MIN_CELSIUS, MAX_ALTITUDE, MIN_ABYSS, PLANET_RADIOUS
+from map_config import WorldConfig, biome_names_by_code, MAX_CELSIUS, MIN_CELSIUS, MAX_ALTITUDE, PLANET_RADIOUS
 
 # Configurazione logger locale
 logger = logging.getLogger(__name__)
@@ -215,27 +215,29 @@ class WorldEngineRunner:
     # Alias per compatibilità
     _rgb_to_biome_name = _biome_indices_to_names
 
-    def _elevation_to_meters(self, h5_file, MAX_ALTITUDE, MIN_ABYSS):
+    def _elevation_to_meters(self, h5_file, max_altitude):
         """
-        Semplificazione: 
-        - Valore 1.0 = 0 metri (Livello del mare).
-        - Valori > 1.0 = Scalati linearmente tra 0 e MAX_ALTITUDE basandosi sul max del dataset.
-        - Valori < 1.0 = Fondali marini (scalati proporzionalmente in negativo).
+        Converte l'altitudine in metri:
+        - Livello del mare / oceani impostati a 0 metri.
+        - Terre emerse (> sea_level) scalate linearmente tra 0 e max_altitude
+          in modo tale che il punto più alto del mondo corrisponda esattamente a max_altitude.
         """
         elevation_array = h5_file['elevation/data'][:]
-        
-        # Estraiamo i picchi reali del dataset attuale
-        min_val = np.min(elevation_array)
+        sea_level = float(h5_file['elevation/thresholds/sea'][()]) if 'elevation/thresholds/sea' in h5_file else 1.0
         max_val = np.max(elevation_array)
-        
-        # Prepariamo i punti di ancoraggio (X = astratto, Y = metri reali)
-        # Nota: np.interp richiede che l'asse X sia rigorosamente crescente
-        x_vals = [min_val, 1.0, max_val]
-        y_vals = [-float(MIN_ABYSS), 0.0, float(MAX_ALTITUDE)]
-        
-        # Interpolazione vettorizzata su tutta la matrice
-        meters_array = np.interp(elevation_array, x_vals, y_vals)
-        
+
+        # Matrice di output inizializzata a 0 (inclusi oceani e fondali)
+        meters_array = np.zeros_like(elevation_array, dtype=np.float32)
+
+        # Normalizzazione lineare per le sole terre emerse al di sopra del livello del mare
+        if max_val > sea_level:
+            land_mask = elevation_array > sea_level
+            if 'ocean' in h5_file:
+                land_mask = land_mask & (~h5_file['ocean'][:])
+
+            scaled = (elevation_array[land_mask] - sea_level) / (max_val - sea_level) * float(max_altitude)
+            meters_array[land_mask] = scaled
+
         return np.round(meters_array).astype(np.int32)
 
     def _humidity_to_percentage(self, humidity_array, min_val, max_val):
@@ -430,7 +432,7 @@ class WorldEngineRunner:
 
                 # --- 2. ELEVATION ---
                 if 'elevation/data' in f:
-                    meters_matrix = self._elevation_to_meters(f, MAX_ALTITUDE, MIN_ABYSS)
+                    meters_matrix = self._elevation_to_meters(f, MAX_ALTITUDE)
 
                     if 'elevation_meters' in norm_grp: del norm_grp['elevation_meters']
                     norm_grp.create_dataset('elevation_meters', data=meters_matrix, dtype='int32')
