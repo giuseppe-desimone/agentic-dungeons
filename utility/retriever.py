@@ -60,7 +60,13 @@ def get_map_data(file_path):
             cached_data = {}
             for _, key, _ in mapping:
                 if key in group:
-                    cached_data[key] = group[key][:]
+                    data = group[key][:]
+                    if data.dtype.kind in ('S', 'a', 'O'):
+                        try:
+                            data = data.astype(str)
+                        except Exception:
+                            pass
+                    cached_data[key] = data
 
             # Inizializzazione della finestra interattiva di Matplotlib
             plt.ion()
@@ -71,7 +77,7 @@ def get_map_data(file_path):
             current_key = list(loaded_images.keys())[0]
             current_label, current_img = loaded_images[current_key]
             
-            im_plot = ax.imshow(current_img)
+            im_plot = ax.imshow(current_img, interpolation='nearest')
             ax.set_title(f"Mappa Corrente: {current_label}\n[Tasti 1-5 per cambiare mappa | Passa il mouse per info | Click per log su Terminale]")
 
             # Creazione del menù contestuale grafico (Tooltip) all'interno degli assi
@@ -102,9 +108,6 @@ def get_map_data(file_path):
                 for label, key, unit in mapping:
                     if key in cached_data:
                         val = cached_data[key][y, x]
-                        if isinstance(val, bytes):
-                            val = val.decode('utf-8')
-                        
                         if isinstance(val, (bool, np.bool_)):
                             val_str = "Si" if val else "No"
                         else:
@@ -114,57 +117,68 @@ def get_map_data(file_path):
                         lines.append(f"{label:<18} : n/d")
                 return "\n".join(lines)
 
-            # Gestione sicura del background per il Blitting senza attributi errati
+            # Gestione del background per il Blitting e memoization coordinate
             bg = None
+            last_coords = None
+            last_side = None
 
             def on_draw(event):
                 nonlocal bg
-                # Cattura in modo sicuro la regione del canvas legata ai nostri assi
+                # Cattura la regione del canvas con la mappa già disegnata
                 bg = fig.canvas.copy_from_bbox(ax.bbox)
 
             fig.canvas.mpl_connect('draw_event', on_draw)
 
-            # 1. EVENTO HOVER (Movimento del mouse)
+            # 1. EVENTO HOVER ULTRA-RAPIDO (Blitting + Coordinate Debounce)
             def on_mouse_move(event):
-                nonlocal bg
+                nonlocal bg, last_coords, last_side
                 if event.xdata is None or event.ydata is None:
                     if tooltip.get_visible():
                         tooltip.set_visible(False)
-                        fig.canvas.draw_idle()
+                        last_coords = None
+                        if bg is not None:
+                            fig.canvas.restore_region(bg)
+                            fig.canvas.blit(ax.bbox)
                     return
 
-                x, y = int(np.floor(event.xdata)), int(np.floor(event.ydata))
+                x, y = int(np.round(event.xdata)), int(np.round(event.ydata))
                 width, height = current_img.size
 
-                if 0 <= x < width and 0 <= y < height:
-                    info_text = get_pixel_info_text(x, y)
-                    tooltip.set_text(info_text)
-                    tooltip.set_visible(True)
-                    
-                    # Riposizionamento dinamico del menù per prevenire coperture
-                    if event.xdata < width / 2:
-                        tooltip.set_transform(ax.transAxes)
-                        tooltip.set_position((0.68, 0.96)) 
-                    else:
-                        tooltip.set_transform(ax.transAxes)
-                        tooltip.set_position((0.02, 0.96)) 
-
-                    # Ripristino e disegno rapido sul canvas tramite blit
-                    if bg is not None:
-                        fig.canvas.restore_region(bg)
-                        ax.draw_artist(im_plot)
-                        ax.draw_artist(tooltip)
-                        fig.canvas.blit(ax.bbox)
-                else:
+                if not (0 <= x < width and 0 <= y < height):
                     if tooltip.get_visible():
                         tooltip.set_visible(False)
-                        fig.canvas.draw_idle()
+                        last_coords = None
+                        if bg is not None:
+                            fig.canvas.restore_region(bg)
+                            fig.canvas.blit(ax.bbox)
+                    return
+
+                # Se il mouse è rimasto all'interno dello stesso pixel, non fare nulla!
+                if (x, y) == last_coords:
+                    return
+                last_coords = (x, y)
+
+                info_text = get_pixel_info_text(x, y)
+                tooltip.set_text(info_text)
+                tooltip.set_visible(True)
+
+                # Riposizionamento del menù solo al cambio di quadrante
+                side = 'right' if event.xdata < width / 2 else 'left'
+                if side != last_side:
+                    last_side = side
+                    tooltip.set_position((0.68, 0.96) if side == 'right' else (0.02, 0.96))
+
+                # Ripristino e disegno rapido tramite blit (NON ridisegna im_plot!)
+                if bg is not None:
+                    fig.canvas.restore_region(bg)
+                    ax.draw_artist(tooltip)
+                    fig.canvas.blit(ax.bbox)
 
             # 2. EVENTO CLICK (Log persistente su Terminale)
             def on_click(event):
                 if event.xdata is None or event.ydata is None:
                     return
-                x, y = int(np.floor(event.xdata)), int(np.floor(event.ydata))
+                x, y = int(np.round(event.xdata)), int(np.round(event.ydata))
                 width, height = current_img.size
 
                 if 0 <= x < width and 0 <= y < height:
@@ -175,23 +189,24 @@ def get_map_data(file_path):
 
             # 3. EVENTO CAMBIO LAYER (Tasti 1-5)
             def on_key(event):
-                nonlocal current_key, current_label, current_img, bg
-                
+                nonlocal current_key, current_label, current_img, bg, last_coords, last_side
+
                 if event.key in loaded_images and event.key != current_key:
                     current_key = event.key
                     current_label, current_img = loaded_images[current_key]
-                    
+
                     xlim = ax.get_xlim()
                     ylim = ax.get_ylim()
-                    
+
                     im_plot.set_data(current_img)
                     ax.set_title(f"Mappa Corrente: {current_label}\n[Tasti 1-5 per cambiare mappa | Passa il mouse per info | Click per log su Terminale]")
-                    
+
                     ax.set_xlim(xlim)
                     ax.set_ylim(ylim)
-                    
+
                     # Ridisegna l'intera figura e ricattura la cache dello sfondo
                     tooltip.set_visible(False)
+                    last_coords = None
                     fig.canvas.draw()
                     bg = fig.canvas.copy_from_bbox(ax.bbox)
                     print(f"Layer visualizzato: {current_label}")
