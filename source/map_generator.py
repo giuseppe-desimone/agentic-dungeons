@@ -1,10 +1,9 @@
 import sys, os
-from PIL import Image
 import numpy as np
 import h5py
 import logging
 from worldengine.cli.main import main
-from map_config import WorldConfig, biome_colors, MAX_CELSIUS, MIN_CELSIUS, MAX_ALTITUDE, MIN_ABYSS, PLANET_RADIOUS
+from map_config import WorldConfig, biome_names_by_code, MAX_CELSIUS, MIN_CELSIUS, MAX_ALTITUDE, MIN_ABYSS, PLANET_RADIOUS
 
 # Configurazione logger locale
 logger = logging.getLogger(__name__)
@@ -204,24 +203,17 @@ class WorldEngineRunner:
                 
         return params
 
-    def _rgb_to_biome_name(self, img_array):
+    def _biome_indices_to_names(self, biome_indices):
         """
-        Converte un array numpy (H, W, 3) in un array (H, W) di stringhe
-        basandosi sul dizionario biome_colors.
+        Converte una matrice di indici numerici dei biomi (H, W) in un array di stringhe
+        utilizzando biome_names_by_code in modo vettorizzato istantaneo.
         """
-        rows, cols, _ = img_array.shape
-        biome_names_map = np.full((rows, cols), "ocean", dtype=object)
+        logger.info(" > Mapping biome indices to biome names directly from HDF5...")
+        lookup_array = np.array([biome_names_by_code.get(i, "ocean") for i in range(len(biome_names_by_code))], dtype=object)
+        return lookup_array[biome_indices]
 
-        logger.info(" > Mapping pixels to biome names (this might take a moment) ---")
-        
-        for name, color_tuple in biome_colors.items():
-            color_array = np.array(color_tuple)
-            mask = np.all(img_array == color_array, axis=-1)
-            
-            if np.any(mask):
-                biome_names_map[mask] = name
-        
-        return biome_names_map
+    # Alias per compatibilità
+    _rgb_to_biome_name = _biome_indices_to_names
 
     def _elevation_to_meters(self, h5_file, MAX_ALTITUDE, MIN_ABYSS):
         """
@@ -423,7 +415,6 @@ class WorldEngineRunner:
         """
         output_dir = getattr(self.cfg, 'OUTPUT_DIR', os.path.join("assets", "map"))
         world_file = os.path.join(output_dir, f"{self.cfg.WORLD_NAME}.world")
-        biome_img_path = os.path.join(output_dir, f"{self.cfg.WORLD_NAME}_biome.png")
 
         if not os.path.exists(world_file):
             logger.warning(f"File non trovato durante l'iniezione: {world_file}")
@@ -537,21 +528,20 @@ class WorldEngineRunner:
                     
 
                 # --- 9. BIOMES ---
-                if os.path.exists(biome_img_path):
-                    with Image.open(biome_img_path) as img:
-                        img_arr = np.array(img.convert('RGB'))
-                    
-                    biome_names = self._rgb_to_biome_name(img_arr)
+                if 'biome' in f:
+                    biome_indices = f['biome'][:]
+                    biome_names = self._biome_indices_to_names(biome_indices)
                     
                     if 'biome_names' in norm_grp: del norm_grp['biome_names']
                     dt = h5py.special_dtype(vlen=str)
                     norm_grp.create_dataset('biome_names', data=biome_names, dtype=dt)
-                    logger.info(f" > Biome names saved.")
+                    logger.info(" > Biome names saved directly from HDF5 biome dataset.")
 
                 
                 # --- 10. OCEAN ---
                 if 'ocean' in f:
                     ocean_bool = f['ocean'][:]
+                    if 'ocean_presence' in norm_grp: del norm_grp['ocean_presence']
                     norm_grp.create_dataset('ocean_presence', data=ocean_bool, dtype='bool')
                     logger.info(" > Ocean mask moved successfully into normalized_data.")
 
