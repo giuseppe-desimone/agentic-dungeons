@@ -93,7 +93,6 @@ class POIEngine:
             }
             pois.append(poi_info)
 
-            # --- FASE 4: AGGIORNAMENTO DINAMICO DELLA MAPPA (INCENERIMENTO) ---
             
             # Calcolo della distanza orizzontale con WRAPPING (Mondo Cilindrico)
             dx = np.minimum(np.abs(x_grid - x_max), width - np.abs(x_grid - x_max))
