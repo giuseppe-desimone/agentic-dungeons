@@ -1,10 +1,9 @@
 import sys, os
-from PIL import Image
 import numpy as np
 import h5py
 import logging
 from worldengine.cli.main import main
-from src.map_config import WorldConfig, biome_colors, MAX_CELSIUS, MIN_CELSIUS, MAX_ALTITUDE, MIN_ABYSS, PLANET_RADIOUS
+from src.map_config import WorldConfig, biome_names_by_code, MAX_CELSIUS, MIN_CELSIUS, MAX_ALTITUDE, MAX_OCEAN_DEPTH, PLANET_RADIOUS
 
 # Configurazione logger locale
 logger = logging.getLogger(__name__)
@@ -204,46 +203,58 @@ class WorldEngineRunner:
                 
         return params
 
-    def _rgb_to_biome_name(self, img_array):
+    def _biome_indices_to_names(self, biome_indices):
         """
-        Converte un array numpy (H, W, 3) in un array (H, W) di stringhe
-        basandosi sul dizionario biome_colors.
+        Converte una matrice di indici numerici dei biomi (H, W) in un array di stringhe
+        utilizzando biome_names_by_code in modo vettorizzato istantaneo.
         """
-        rows, cols, _ = img_array.shape
-        biome_names_map = np.full((rows, cols), "ocean", dtype=object)
+        logger.info(" > Mapping biome indices to biome names directly from HDF5...")
+        lookup_array = np.array([biome_names_by_code.get(i, "ocean") for i in range(len(biome_names_by_code))], dtype=object)
+        return lookup_array[biome_indices]
 
-        logger.info(" > Mapping pixels to biome names (this might take a moment) ---")
-        
-        for name, color_tuple in biome_colors.items():
-            color_array = np.array(color_tuple)
-            mask = np.all(img_array == color_array, axis=-1)
-            
-            if np.any(mask):
-                biome_names_map[mask] = name
-        
-        return biome_names_map
-
-    def _elevation_to_meters(self, h5_file, MAX_ALTITUDE, MIN_ABYSS):
+    def _elevation_to_meters(self, h5_file, max_altitude, max_ocean_depth=0):
         """
-        Semplificazione: 
-        - Valore 1.0 = 0 metri (Livello del mare).
-        - Valori > 1.0 = Scalati linearmente tra 0 e MAX_ALTITUDE basandosi sul max del dataset.
-        - Valori < 1.0 = Fondali marini (scalati proporzionalmente in negativo).
+        Converte l'altitudine in metri reali (DEM continuo con batimetria oceanica):
+        - Terre emerse (> sea_level): interpolazione a tronconi basata sulle soglie di WorldEngine
+          (0m a sea_level, 400m a plain, 1200m a hill, max_altitude al picco).
+        - Oceani (ocean == True): batimetria negativa da 0m (costa) fino a -max_ocean_depth (abisso).
         """
         elevation_array = h5_file['elevation/data'][:]
-        
-        # Estraiamo i picchi reali del dataset attuale
-        min_val = np.min(elevation_array)
-        max_val = np.max(elevation_array)
-        
-        # Prepariamo i punti di ancoraggio (X = astratto, Y = metri reali)
-        # Nota: np.interp richiede che l'asse X sia rigorosamente crescente
-        x_vals = [min_val, 1.0, max_val]
-        y_vals = [-float(MIN_ABYSS), 0.0, float(MAX_ALTITUDE)]
-        
-        # Interpolazione vettorizzata su tutta la matrice
-        meters_array = np.interp(elevation_array, x_vals, y_vals)
-        
+        sea_level = float(h5_file['elevation/thresholds/sea'][()]) if 'elevation/thresholds/sea' in h5_file else 1.0
+        plain_th = float(h5_file['elevation/thresholds/plain'][()]) if 'elevation/thresholds/plain' in h5_file else sea_level + 0.7
+        hill_th = float(h5_file['elevation/thresholds/hill'][()]) if 'elevation/thresholds/hill' in h5_file else plain_th + 1.1
+        max_val = float(np.max(elevation_array))
+
+        # 1. Terre emerse (Piecewise sui Thresholds geomorfologici)
+        x_anchors = [
+            sea_level,
+            max(plain_th, sea_level + 0.01),
+            max(hill_th, plain_th + 0.01),
+            max(max_val, hill_th + 0.01)
+        ]
+        y_anchors = [0.0, 400.0, 1200.0, float(max_altitude)]
+        meters_array = np.interp(elevation_array, x_anchors, y_anchors)
+
+        ocean_mask = h5_file['ocean'][:] if 'ocean' in h5_file else (elevation_array <= sea_level)
+
+        # Depressioni/canyon continentali sotto il livello del mare: ancorati a 0m
+        meters_array[(~ocean_mask) & (elevation_array <= sea_level)] = 0.0
+
+        # 2. Batimetria oceanica (quote negative per i fondali marini)
+        if max_ocean_depth > 0 and np.any(ocean_mask):
+            ocean_elev = elevation_array[ocean_mask]
+            min_ocean_elev = np.min(ocean_elev)
+            delta_ocean = sea_level - min_ocean_elev
+
+            if delta_ocean > 0:
+                # 0.0 sulla costa -> 1.0 nella fossa oceanica più profonda
+                ocean_depth_norm = (sea_level - ocean_elev) / delta_ocean
+                meters_array[ocean_mask] = -ocean_depth_norm * float(max_ocean_depth)
+            else:
+                meters_array[ocean_mask] = 0.0
+        else:
+            meters_array[ocean_mask] = 0.0
+
         return np.round(meters_array).astype(np.int32)
 
     def _humidity_to_percentage(self, humidity_array, min_val, max_val):
@@ -291,20 +302,37 @@ class WorldEngineRunner:
             
         return np.round(flow_array).astype(np.int32)
     
-    def _precipitation_to_mm(self, precip_array, min_val, low_val, med_val, max_val):
+    def _precipitation_to_mm(self, h5_file):
         """
-        Converte le precipitazioni di WorldEngine (float [-1.0, 1.0]) in mm/anno reali.
-        Usa interpolazione lineare su più segmenti basati sui threshold dinamici.
+        Converte le precipitazioni di WorldEngine in mm/anno reali:
+        Recupera le soglie geoclimatiche (low, med) direttamente dal dataset HDF5,
+        applicando un'interpolazione a tronconi ancorata a valori fisici realistici:
+        - min (aridità estrema): 0 mm/anno
+        - low (soglia clima arido/steppa): 250 mm/anno
+        - med (clima temperato/umido): 1000 mm/anno
+        - max (clima pluviale/monsonico): 4000 mm/anno
         """
-        # Creiamo gli array delle soglie e dei valori reali corrispondenti
-        # Nota: np.interp richiede che l'asse X sia in ordine crescente
-        x_vals = [min_val, low_val, med_val, max_val]
+        precip_data = h5_file['precipitation/data'][:]
+        min_val = float(np.min(precip_data))
+        max_val = float(np.max(precip_data))
+
+        # Recupero soglie dinamiche da HDF5 con fallback di sicurezza
+        if 'precipitation/thresholds' in h5_file:
+            low_val = float(h5_file['precipitation/thresholds/low'][()])
+            med_val = float(h5_file['precipitation/thresholds/med'][()])
+        else:
+            low_val = min_val + (max_val - min_val) * 0.25
+            med_val = min_val + (max_val - min_val) * 0.50
+
+        x_vals = [
+            min_val,
+            max(low_val, min_val + 1e-4),
+            max(med_val, low_val + 1e-4),
+            max(max_val, med_val + 1e-4)
+        ]
         y_vals = [0.0, 250.0, 1000.0, 4000.0]  # mm/anno
-        
-        # Interpolazione lineare vettorizzata
-        mm_array = np.interp(precip_array, x_vals, y_vals)
-        
-        # Arrotonda e converte in Interi
+
+        mm_array = np.interp(precip_data, x_vals, y_vals)
         return np.round(mm_array).astype(np.int32)
 
     def _temperature_to_celsius(self, temp_array, min_val, max_val, MAX_CELSIUS, MIN_CELSIUS):
@@ -423,7 +451,6 @@ class WorldEngineRunner:
         """
         output_dir = getattr(self.cfg, 'OUTPUT_DIR', os.path.join("assets", "map"))
         world_file = os.path.join(output_dir, f"{self.cfg.WORLD_NAME}.world")
-        biome_img_path = os.path.join(output_dir, f"{self.cfg.WORLD_NAME}_biome.png")
 
         if not os.path.exists(world_file):
             logger.warning(f"File non trovato durante l'iniezione: {world_file}")
@@ -439,7 +466,7 @@ class WorldEngineRunner:
 
                 # --- 2. ELEVATION ---
                 if 'elevation/data' in f:
-                    meters_matrix = self._elevation_to_meters(f, MAX_ALTITUDE, MIN_ABYSS)
+                    meters_matrix = self._elevation_to_meters(f, MAX_ALTITUDE, MAX_OCEAN_DEPTH)
 
                     if 'elevation_meters' in norm_grp: del norm_grp['elevation_meters']
                     norm_grp.create_dataset('elevation_meters', data=meters_matrix, dtype='int32')
@@ -484,14 +511,8 @@ class WorldEngineRunner:
 
 
                 # --- 6. PRECIPITATION (MM/YEAR) ---
-                if 'precipitation/data' in f and 'precipitation/thresholds' in f:
-                    precip_data = f['precipitation/data'][:]
-                    min_precip = np.min(precip_data)
-                    max_precip = np.max(precip_data)
-                    low_p = f['precipitation/thresholds/low'][()]
-                    med_p = f['precipitation/thresholds/med'][()]
-
-                    precip_mm_matrix = self._precipitation_to_mm(precip_data, min_precip, low_p, med_p, max_precip)
+                if 'precipitation/data' in f:
+                    precip_mm_matrix = self._precipitation_to_mm(f)
 
                     if 'precipitation_mm' in norm_grp: del norm_grp['precipitation_mm']
                     norm_grp.create_dataset('precipitation_mm', data=precip_mm_matrix, dtype='int32')
@@ -537,21 +558,20 @@ class WorldEngineRunner:
                     
 
                 # --- 9. BIOMES ---
-                if os.path.exists(biome_img_path):
-                    with Image.open(biome_img_path) as img:
-                        img_arr = np.array(img.convert('RGB'))
-                    
-                    biome_names = self._rgb_to_biome_name(img_arr)
+                if 'biome' in f:
+                    biome_indices = f['biome'][:]
+                    biome_names = self._biome_indices_to_names(biome_indices)
                     
                     if 'biome_names' in norm_grp: del norm_grp['biome_names']
                     dt = h5py.special_dtype(vlen=str)
                     norm_grp.create_dataset('biome_names', data=biome_names, dtype=dt)
-                    logger.info(f" > Biome names saved.")
+                    logger.info(" > Biome names saved directly from HDF5 biome dataset.")
 
                 
                 # --- 10. OCEAN ---
                 if 'ocean' in f:
                     ocean_bool = f['ocean'][:]
+                    if 'ocean_presence' in norm_grp: del norm_grp['ocean_presence']
                     norm_grp.create_dataset('ocean_presence', data=ocean_bool, dtype='bool')
                     logger.info(" > Ocean mask moved successfully into normalized_data.")
 
