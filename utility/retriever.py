@@ -76,8 +76,9 @@ def get_map_data(file_path):
             # Impostazione del layer iniziale
             current_key = list(loaded_images.keys())[0]
             current_label, current_img = loaded_images[current_key]
+            width, height = current_img.size
             
-            im_plot = ax.imshow(current_img, interpolation='nearest')
+            im_plot = ax.imshow(current_img, extent=[0, width, height, 0], interpolation='nearest')
             ax.set_title(f"Mappa Corrente: {current_label}\n[Tasti 1-5 per cambiare mappa | Passa il mouse per info | Click per log su Terminale]")
 
             # Creazione del menù contestuale grafico (Tooltip) all'interno degli assi
@@ -141,7 +142,7 @@ def get_map_data(file_path):
                             fig.canvas.blit(ax.bbox)
                     return
 
-                x, y = int(np.round(event.xdata)), int(np.round(event.ydata))
+                x, y = int(np.floor(event.xdata)), int(np.floor(event.ydata))
                 width, height = current_img.size
 
                 if not (0 <= x < width and 0 <= y < height):
@@ -178,7 +179,7 @@ def get_map_data(file_path):
             def on_click(event):
                 if event.xdata is None or event.ydata is None:
                     return
-                x, y = int(np.round(event.xdata)), int(np.round(event.ydata))
+                x, y = int(np.floor(event.xdata)), int(np.floor(event.ydata))
                 width, height = current_img.size
 
                 if 0 <= x < width and 0 <= y < height:
@@ -194,11 +195,13 @@ def get_map_data(file_path):
                 if event.key in loaded_images and event.key != current_key:
                     current_key = event.key
                     current_label, current_img = loaded_images[current_key]
+                    width, height = current_img.size
 
                     xlim = ax.get_xlim()
                     ylim = ax.get_ylim()
 
                     im_plot.set_data(current_img)
+                    im_plot.set_extent([0, width, height, 0])
                     ax.set_title(f"Mappa Corrente: {current_label}\n[Tasti 1-5 per cambiare mappa | Passa il mouse per info | Click per log su Terminale]")
 
                     ax.set_xlim(xlim)
