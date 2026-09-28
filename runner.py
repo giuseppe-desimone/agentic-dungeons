@@ -1,5 +1,5 @@
 import logging
-from src.map_generator import WorldEngineRunner, WorldConfig
+from src.world.world_generator import WorldEngineRunner, WorldConfig
 
 # Configurazione base per visualizzare i log sulla console
 logging.basicConfig(
@@ -29,13 +29,8 @@ def run_full_workflow():
     generate_world_map()
     
     print("\n" + "="*40 + "\n") # Separatore visivo in console
-    
-    # 2. Passa i POI estratti a LM studio (Fase da implementare successivamente)
-    # Ad esempio puoi serializzare i POI in un file md temporaneo o passarli come argomento
-    #process_lm_studio_prompts() 
 
     logging.info("=== Workflow Completato Con Successo ===")
     
 if __name__ == "__main__":
-    # Il main invoca la terza funzione di orchestrazione
     run_full_workflow()

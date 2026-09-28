@@ -3,92 +3,10 @@ import numpy as np
 import h5py
 import logging
 from worldengine.cli.main import main
-from src.map_config import WorldConfig, biome_names_by_code, MAX_CELSIUS, MIN_CELSIUS, MAX_ALTITUDE, MAX_OCEAN_DEPTH, PLANET_RADIOUS
+from src.world.world_config import WorldConfig, biome_names_by_code, MAX_CELSIUS, MIN_CELSIUS, MAX_ALTITUDE, MAX_OCEAN_DEPTH, MAX_FLOW_M3S, MAX_RUNOFF_MM, PLANET_RADIOUS
 
 # Configurazione logger locale
 logger = logging.getLogger(__name__)
-
-"""
-usage: usage: worldengine [options] [world|plates|ancient_map|info|export]
-
-positional arguments:
-  OPERATOR
-  FILE
-
-options:
-  -h, --help            show this help message and exit
-  -o DIR, --output-dir DIR
-                        generate files in DIR [default = '.']
-  -n STR, --worldname STR
-                        set world name to STR. output is stored in a world file with the name format
-                        'STR.world'. If a name is not provided, then seed_N.world, where N=SEED
-  --hdf5                Save world file using HDF5 format. Default = store using protobuf format
-  -s N, --seed N        Use seed=N to initialize the pseudo-random generation. If not provided, one will be     
-                        selected for you.
-  -t STR, --step STR    Use step=[plates|precipitations|full] to specify how far to proceed in the world        
-                        generation process. [default='full']
-  -x N, --width N       N = width of the world to be generated [default=512]
-  -y N, --height N      N = height of the world to be generated [default=512]
-  -q N, --number-of-plates N
-                        N = number of plates [default = 10]
-  --recursion_limit N   Set the recursion limit [default = 2000]
-  -v, --verbose         Enable verbose messages
-  --version             Display version information
-  --bw, --black-and-white
-                        generate maps in black and white
-
-Generate Options:
-  These options are only useful in plate and world modes
-
-  -r, --rivers          generate rivers map
-  --gs, --grayscale-heightmap
-                        produce a grayscale heightmap
-  --ocean_level N       elevation cut off for sea level " +[default = 1.0]
-  --temps #/#/#/#/#/#   Provide alternate ranges for temperatures. If not provided, the default values will be  
-                        used. [default = .126/.235/.406/.561/.634/.876]
-  --humidity #/#/#/#/#/#/#
-                        Provide alternate ranges for humidities. If not provided, the default values will be    
-                        used. [default = .059/.222/.493/.764/.927/.986/.998]
-  -gv N, --gamma-value N
-                        N = Gamma value for temperature/precipitation gamma correction curve. [default = 1.25]  
-  -go N, --gamma-offset N
-                        N = Adjustment value for temperature/precipitation gamma correction curve. [default =   
-                        .2]
-  --not-fade-borders    Not fade borders
-  --scatter             generate scatter plot
-  --sat                 generate satellite map
-  --ice                 generate ice caps map
-
-Ancient Map Options:
-  These options are only useful in ancient_map mode
-
-  -w FILE, --worldfile FILE
-                        FILE to be loaded
-  -g FILE, --generatedfile FILE
-                        name of the FILE
-  -f N, --resize-factor N
-                        resize factor (only integer values). Note this can only be used to increase the size    
-                        of the map [default=1]
-  --sea_color S         string for color [blue|brown]
-  --not-draw-biome      Not draw biome
-  --not-draw-mountains  Not draw mountains
-  --not-draw-rivers     Not draw rivers
-  --draw-outer-border   Draw outer land border
-
-Export Options:
-  You can specify the formats you wish the generated output to be in.
-
-  --export-format STR   Export to a specific format such as BMP or PNG. All possible formats:
-                        http://www.gdal.org/formats_list.html
-  --export-datatype STR
-                        Type of stored data (e.g. uint16, int32, float32 and etc.)
-  --export-dimensions EXPORT_DIMENSIONS EXPORT_DIMENSIONS
-                        Export to desired dimensions. (e.g. 4096 4096)
-  --export-normalize EXPORT_NORMALIZE EXPORT_NORMALIZE
-                        Normalize the data set to between min and max. (e.g. 0 255)
-  --export-subset EXPORT_SUBSET EXPORT_SUBSET EXPORT_SUBSET EXPORT_SUBSET
-                        Normalize the data set to between min and max?
-"""
 
 class WorldEngineRunner:
     """
@@ -274,31 +192,29 @@ class WorldEngineRunner:
         
         return np.round(percentage).astype(np.int32)
 
-    def _watermap_to_runoff(self, water_array, max_val):
+    def _watermap_to_runoff(self, water_array, max_val, max_runoff_mm):
         """
         Converte la watermap in deflusso superficiale (mm/anno).
         Mappa dinamicamente dal valore 0 al valore massimo del dataset (fino a ~2000 mm).
         """
-        MAX_RUNOFF_MM = 2000.0
         runoff_array = np.zeros_like(water_array, dtype=np.float32)
         
         mask = water_array > 0
         if max_val > 0:
-            runoff_array[mask] = (water_array[mask] / max_val) * MAX_RUNOFF_MM
+            runoff_array[mask] = (water_array[mask] / max_val) * max_runoff_mm
             
         return np.round(runoff_array).astype(np.int32)
 
-    def _river_map_to_flow(self, river_array, max_river_val):
+    def _river_map_to_flow(self, river_array, max_river_val, max_flow_m3s):
         """
         Converte la river_map in portata d'acqua (m³/s) usando il massimo dinamico.
         La portata massima realistica impostata è 6500 m³/s.
         """
-        MAX_FLOW_M3S = 6500.0
         flow_array = np.zeros_like(river_array, dtype=np.float32)
         
         mask_river = river_array > 0
         if max_river_val > 0:
-            flow_array[mask_river] = (river_array[mask_river] / max_river_val) * MAX_FLOW_M3S
+            flow_array[mask_river] = (river_array[mask_river] / max_river_val) * max_flow_m3s
             
         return np.round(flow_array).astype(np.int32)
     
@@ -491,7 +407,7 @@ class WorldEngineRunner:
                     water_data = f['watermap/data'][:]
                     max_water = np.max(water_data)
                     
-                    runoff_matrix = self._watermap_to_runoff(water_data, max_water)
+                    runoff_matrix = self._watermap_to_runoff(water_data, max_water, MAX_RUNOFF_MM)
 
                     if 'surface_runoff_mm' in norm_grp: del norm_grp['surface_runoff_mm']
                     norm_grp.create_dataset('surface_runoff_mm', data=runoff_matrix, dtype='int32')
@@ -503,7 +419,7 @@ class WorldEngineRunner:
                     river_data = f['river_map'][:]
                     max_river = np.max(river_data)
                     
-                    flow_matrix = self._river_map_to_flow(river_data, max_river)
+                    flow_matrix = self._river_map_to_flow(river_data, max_river, MAX_FLOW_M3S)
 
                     if 'river_flow_m3s' in norm_grp: del norm_grp['river_flow_m3s']
                     norm_grp.create_dataset('river_flow_m3s', data=flow_matrix, dtype='int32')
