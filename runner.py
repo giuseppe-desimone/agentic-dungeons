@@ -1,5 +1,6 @@
 import logging
 from src.world.world_generator import WorldEngineRunner, WorldConfig
+from utility.retriever import get_world_data
 
 # Configurazione base per visualizzare i log sulla console
 logging.basicConfig(
@@ -7,9 +8,9 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-def generate_world_map():
-    """Fase 1: Generazione della mappa e analisi dei POI tramite Python."""
-    logging.info("Inizio generazione della mappa...")
+def generate_world():
+    """Fase 1: Generazione del mondo e analisi dei POI tramite Python."""
+    logging.info("Inizio generazione del mondo...")
     
     world_cfg = WorldConfig
     world_cfg.WORLD_NAME = "world"
@@ -20,13 +21,13 @@ def generate_world_map():
     runner = WorldEngineRunner(world_cfg)
     runner.run()
     
-    logging.info("Mappa generata con successo.")
+    logging.info("Mondo generato con successo.")
 
 def run_full_workflow():
     """Funzione di orchestrazione che unisce i due processi."""
     logging.info("=== Avvio Workflow Completo ===")
     
-    generate_world_map()
+    generate_world()
     
     print("\n" + "="*40 + "\n") # Separatore visivo in console
 
@@ -34,3 +35,4 @@ def run_full_workflow():
     
 if __name__ == "__main__":
     run_full_workflow()
+    get_world_data("assets/world/world.world")  # Analizza il file HDF5 generato

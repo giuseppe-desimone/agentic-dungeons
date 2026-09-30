@@ -521,16 +521,16 @@ class WorldEngineRunner:
                     logger.info(" > Permeability percentage already exists in normalized_data.")
 
                 # --- 13. PIXEL WIDTHS PER LATITUDE ---
-                map_width = getattr(self.cfg, 'WIDTH')
-                map_height = getattr(self.cfg, 'HEIGHT')
+                world_width = getattr(self.cfg, 'WIDTH')
+                world_height = getattr(self.cfg, 'HEIGHT')
                 pixel_widths_vector = self._calculate_pixel_widths_meters(
-                    height_pixels=map_height, 
-                    width_pixels=map_width, 
+                    height_pixels=world_height, 
+                    width_pixels=world_width, 
                     planet_radius=PLANET_RADIOUS
                 )
                 if 'pixel_widths_lat_meters' in norm_grp: del norm_grp['pixel_widths_lat_meters']
                 norm_grp.create_dataset('pixel_widths_lat_meters', data=pixel_widths_vector, dtype='int32')
-                logger.info(f" > Pixel widths map saved (Equator: {pixel_widths_vector[map_height//2]}m, Pole Y=0: {pixel_widths_vector[0]}m).")
+                logger.info(f" > Pixel widths map saved (Equator: {pixel_widths_vector[world_height//2]}m, Pole Y=0: {pixel_widths_vector[0]}m).")
 
         except Exception as e:
             logger.error(f"Error injecting data: {e}", exc_info=True)

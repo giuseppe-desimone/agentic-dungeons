@@ -153,7 +153,7 @@ class WorldConfig:
     INPUT_FILE = None  
     
     # Output settings
-    OUTPUT_DIR = "assets/map"
+    OUTPUT_DIR = "assets/world"
     WORLD_NAME = "world"          # -n
     USE_HDF5 = True               # --hdf5
     

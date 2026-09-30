@@ -4,18 +4,18 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 
-def get_map_data(file_path):
+def get_world_data(file_path):
     if not os.path.exists(file_path):
         print(f"Errore: File HDF5 non trovato in '{file_path}'")
         return
 
     # Mappatura dei file immagine associati ai tasti 1-5
-    map_images = {
-        '1': ("Satellite", "assets/map/world_satellite.png"),
-        '2': ("Elevation", "assets/map/world_elevation.png"),
-        '3': ("Precipitation", "assets/map/world_precipitation.png"),
-        '4': ("Biome", "assets/map/world_biome.png"),
-        '5': ("Temperature", "assets/map/world_temperature.png")
+    world_images = {
+        '1': ("Satellite", "assets/world/world_satellite.png"),
+        '2': ("Elevation", "assets/world/world_elevation.png"),
+        '3': ("Precipitation", "assets/world/world_precipitation.png"),
+        '4': ("Biome", "assets/world/world_biome.png"),
+        '5': ("Temperature", "assets/world/world_temperature.png")
     }
 
     # Mapping completo dei dataset
@@ -35,7 +35,7 @@ def get_map_data(file_path):
 
     # Caricamento preventivo delle immagini
     loaded_images = {}
-    for key, (label, img_path) in map_images.items():
+    for key, (label, img_path) in world_images.items():
         if os.path.exists(img_path):
             try:
                 loaded_images[key] = (label, Image.open(img_path))
@@ -45,7 +45,7 @@ def get_map_data(file_path):
             print(f"Avviso: Immagine non trovata -> {img_path}")
 
     if not loaded_images:
-        print("Errore: Nessuna immagine di mappa trovata in 'assets/map/'.")
+        print("Errore: Nessuna immagine del mondo trovata in 'assets/world/'.")
         return
 
     try:
@@ -225,5 +225,5 @@ def get_map_data(file_path):
         print(f"Errore generale durante l'estrazione: {e}")
 
 if __name__ == "__main__":
-    path = "assets/map/world.world" 
-    get_map_data(path)
+    path = "assets/world/world.world" 
+    get_world_data(path)
