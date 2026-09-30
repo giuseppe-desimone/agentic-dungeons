@@ -31,8 +31,9 @@ def run_full_workflow():
     
     print("\n" + "="*40 + "\n") # Separatore visivo in console
 
+    get_world_data("assets/world/world.world")  # Analizza il file HDF5 generato
+
     logging.info("=== Workflow Completato Con Successo ===")
     
 if __name__ == "__main__":
     run_full_workflow()
-    get_world_data("assets/world/world.world")  # Analizza il file HDF5 generato
