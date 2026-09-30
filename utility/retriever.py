@@ -11,10 +11,10 @@ def get_map_data(file_path):
 
     # Mappatura dei file immagine associati ai tasti 1-5
     map_images = {
-        '1': ("Biome", "assets/map/world_biome.png"),
+        '1': ("Satellite", "assets/map/world_satellite.png"),
         '2': ("Elevation", "assets/map/world_elevation.png"),
         '3': ("Precipitation", "assets/map/world_precipitation.png"),
-        '4': ("Satellite", "assets/map/world_satellite.png"),
+        '4': ("Biome", "assets/map/world_biome.png"),
         '5': ("Temperature", "assets/map/world_temperature.png")
     }
 
