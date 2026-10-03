@@ -159,11 +159,11 @@ class WorldConfig:
     
     # --- 2. GENERATION PARAMETERS ---
     SEED = random.randint(0, 9999)# -s (cool ones: 3221, )
-    WIDTH = 1000                  # -x
-    HEIGHT = 500                  # -y
+    WIDTH = 1024                  # -x
+    HEIGHT = 512                  # -y
     NUM_PLATES = 15               # -q
     STEP = "full"                 # -t [plates|precipitations|full]
-    RECURSION_LIMIT = 2000        # --recursion_limit
+    RECURSION_LIMIT = 4000        # --recursion_limit
     
     # --- 3. GENERATE OPTIONS (Flags & Values) ---
     VERBOSE = True                # -v
