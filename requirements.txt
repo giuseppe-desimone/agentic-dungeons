@@ -1,4 +1,29 @@
-pillow
+# World Generation & Processing
 worldengine==0.20.0
 h5py
+pillow
 opencv-python
+numpy
+noise
+
+# Local LLM Inference (Mistral GGUF)
+llama-cpp-python>=0.3.36
+
+# Local Image Generation (Stable Diffusion Turbo)
+torch>=2.6.0
+torchvision
+diffusers>=0.42.0
+transformers
+accelerate
+safetensors
+huggingface-hub
+
+# Cloud LLM & Agents (Gemini / LangGraph)
+google-genai
+python-dotenv
+
+# Nota per l'accelerazione GPU (NVIDIA CUDA):
+# Per installare PyTorch con CUDA:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# Per installare llama-cpp-python con CUDA:
+# pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
