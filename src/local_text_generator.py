@@ -65,7 +65,7 @@ class TextGenerator:
         self,
         prompt: str,
         system_prompt: str = "Sei il Dungeon Master di un'avventura dark fantasy.",
-        max_tokens: int = 512,
+        max_tokens: int = 1024,
         temperature: float = 0.7,
         top_p: float = 0.9,
         stream: bool = True,
